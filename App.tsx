@@ -41,10 +41,10 @@ const App: React.FC = () => {
       {/* Content */}
       <div className="relative z-20 flex flex-col h-screen p-6 box-border gap-6">
         
-        <header className={`relative flex-shrink-0 transition-[height] duration-700 ease-in-out w-full ${isHeaderCentered ? 'h-full' : 'h-20'}`}>
+        <header className={`relative flex-shrink-0 transition-[height] duration-700 ease-in-out w-full ${isHeaderCentered ? 'h-full pointer-events-none' : 'h-20'}`}>
             <div className={`absolute transition-all duration-700 ease-in-out transform-gpu 
               ${isHeaderCentered 
-                ? 'top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 scale-100' 
+                ? 'top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 scale-100 pointer-events-auto' 
                 : 'top-1/2 left-0 -translate-y-1/2 scale-50 origin-left'}`
             }>
               <div className="relative">
