@@ -335,7 +335,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   const isIntentionalDisconnectRef = useRef(false);
   const alarmAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const triggeredAlarmsThisMinuteRef = useRef<Set<number>>(new Set());
-  const wakeLockSentinelRef = useRef<WakeLockSentinel | null>(null);
+  const wakeLockSentinelRef = useRef<any | null>(null);
   
   const currentUserTranscriptionRef = useRef('');
   const currentAssistantTranscriptionRef = useRef('');
@@ -344,12 +344,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
 
   // --- Refs for New Features ---
   const retryAttemptRef = useRef(0);
-  const retryCycleRef = useRef(1);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const userScrolledUpRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const currentChatLogIdRef = useRef<number | null>(null);
+  const connectRef = useRef<() => Promise<void>>(async () => {});
   
   const loadInstructions = useCallback(async () => {
     if (isDbReady) {
@@ -575,55 +575,45 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     }
   }, [playDisconnectSound]);
 
-  const connect = useCallback(async () => {
-    // FIX: Moved scheduleRetry inside connect to resolve circular dependency and "used before declaration" error.
-    const scheduleRetry = (errorReason: string) => {
-      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-  
-      const userFriendlyError = mapErrorToUserMessage(errorReason);
-  
-      setTranscriptHistory(prev => {
-        const lastMessageIsError = prev.length > 0 && prev[prev.length-1].type === 'error';
-        const newError = {
-            id: Date.now().toString(),
-            author: 'assistant' as const,
-            text: `Связь потеряна. ${userFriendlyError} Пытаюсь переподключиться...`,
-            type: 'error' as const,
-            timestamp: Date.now()
-        };
-        // To avoid spamming errors, replace the last one if it was also an error.
-        return lastMessageIsError ? [...prev.slice(0, -1), newError] : [...prev, newError];
-      });
-      
-      retryAttemptRef.current++;
-  
-      if (retryAttemptRef.current > 5) {
-          retryCycleRef.current++;
-          retryAttemptRef.current = 1;
-  
-          if (retryCycleRef.current > 3) {
-              setStatus('Не удалось подключиться. Попробуйте вручную или подождите.');
-              setTranscriptHistory(prev => [...prev, {
-                  id: Date.now().toString(),
-                  author: 'assistant' as const,
-                  text: 'Не удалось восстановить соединение после нескольких попыток. Нажмите на микрофон, чтобы попробовать снова.',
-                  type: 'error' as const,
-                  timestamp: Date.now()
-              }]);
-              retryCycleRef.current = 1; // Reset for next manual attempt
-              return; // Stop retrying
-          } else {
-              setStatus(`Пауза 1 минута перед следующей попыткой...`);
-              retryTimeoutRef.current = setTimeout(() => connect(), 60000);
-              return;
-          }
-      }
-  
-      const delay = 3000 * retryAttemptRef.current;
-      setStatus(`Попытка ${retryAttemptRef.current}/5 (Цикл ${retryCycleRef.current})...`);
-      retryTimeoutRef.current = setTimeout(() => connect(), delay);
-    };
+    const scheduleRetry = useCallback((errorReason: string) => {
+        if (isIntentionalDisconnectRef.current) return;
+        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
 
+        const userFriendlyError = mapErrorToUserMessage(errorReason);
+
+        setTranscriptHistory(prev => {
+            const lastMessageIsError = prev.length > 0 && prev[prev.length - 1].type === 'error';
+            const newError = {
+                id: Date.now().toString(),
+                author: 'assistant' as const,
+                text: `${userFriendlyError} Пытаюсь переподключиться...`,
+                type: 'error' as const,
+                timestamp: Date.now()
+            };
+            return lastMessageIsError ? [...prev.slice(0, -1), newError] : [...prev, newError];
+        });
+
+        retryAttemptRef.current++;
+
+        if (retryAttemptRef.current > 5) {
+            setStatus('Не удалось подключиться. Пожалуйста, попробуйте вручную.');
+            setTranscriptHistory(prev => [...prev, {
+                id: Date.now().toString(),
+                author: 'assistant' as const,
+                text: 'Не удалось восстановить соединение. Нажмите на микрофон, чтобы попробовать снова.',
+                type: 'error' as const,
+                timestamp: Date.now()
+            }]);
+            retryAttemptRef.current = 0; // Reset for next manual attempt
+            return;
+        }
+
+        const delay = Math.pow(2, retryAttemptRef.current) * 1000; // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+        setStatus(`Переподключение через ${delay / 1000} сек...`);
+        retryTimeoutRef.current = setTimeout(() => connectRef.current(), delay);
+    }, []);
+
+  const connect = useCallback(async () => {
     // Already connecting or connected, do nothing.
     if (isConnecting || isConnected) return;
 
@@ -632,6 +622,23 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     isIntentionalDisconnectRef.current = false;
     
     try {
+        // CRITICAL: Check for microphone permissions BEFORE trying to connect.
+        // This prevents infinite loops if permissions are denied.
+        if (navigator.permissions) {
+             try {
+                const permission = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+                if (permission.state === 'denied') {
+                    setStatus('Доступ к микрофону запрещен.');
+                    setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: 'Не могу подключиться, так как доступ к микрофону запрещен. Пожалуйста, измените настройки разрешений для этого сайта в вашем браузере.', type: 'error', timestamp: Date.now() }]);
+                    setIsConnecting(false);
+                    return;
+                }
+            } catch (e) {
+                console.warn("Permission Query API not supported, proceeding with connection attempt.", e);
+            }
+        }
+       
+
         // ALWAYS fetch the latest instructions and chat history from the DB before connecting.
         // This prevents issues with stale closures during retries.
         const currentInstructions = await getAllInstructions();
@@ -780,6 +787,11 @@ ${formattedHistory}
                     setStatus('Микрофон включен. Говорите.');
                     setIsConnected(true);
 
+                    // Reset retry logic on successful connection
+                    retryAttemptRef.current = 0;
+                    if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+
+
                     if ('wakeLock' in navigator) {
                         try {
                             wakeLockSentinelRef.current = await navigator.wakeLock.request('screen');
@@ -802,10 +814,6 @@ ${formattedHistory}
                         }
                     }
 
-                    // Reset retry logic on successful connection
-                    retryAttemptRef.current = 0;
-                    retryCycleRef.current = 1;
-                    if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
 
                     mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ 
                         audio: { 
@@ -991,36 +999,17 @@ ${formattedHistory}
                     console.error('Session error:', e);
                     const errorMessage = e.message || 'An unknown error occurred.';
                     setIsConnecting(false);
+                    disconnect(true);
                     if (!isIntentionalDisconnectRef.current) {
-                        disconnect(); // This will play the sound
-                        if (errorMessage.toLowerCase().includes('does not have permission')) {
-                            const userFriendlyError = "Ошибка разрешений. Убедитесь, что ваш API-ключ имеет доступ к Gemini API. Автоматическое переподключение остановлено.";
-                            setTranscriptHistory(prev => [...prev, {
-                                id: Date.now().toString(),
-                                author: 'assistant',
-                                text: userFriendlyError,
-                                type: 'error',
-                                timestamp: Date.now()
-                            }]);
-                            setStatus('Ошибка разрешений. Проверьте API-ключ.');
-                            if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-                            retryAttemptRef.current = 0;
-                            retryCycleRef.current = 1;
-                        } else {
-                            scheduleRetry(errorMessage);
-                        }
-                    } else {
-                         disconnect(true);
+                        scheduleRetry(errorMessage);
                     }
                 },
                 onclose: () => {
                     console.log('Session closed.');
                     setIsConnecting(false);
-                     if (!isIntentionalDisconnectRef.current) {
-                        disconnect(); // This will play the sound
+                    disconnect(true);
+                    if (!isIntentionalDisconnectRef.current) {
                         scheduleRetry("Connection closed unexpectedly.");
-                    } else {
-                         disconnect(true);
                     }
                 },
             }
@@ -1031,25 +1020,15 @@ ${formattedHistory}
         console.error(`Failed to connect:`, error);
         if (!isIntentionalDisconnectRef.current) {
           const errorMessage = (error as Error).message || "Failed to initialize connection.";
-            if (errorMessage.toLowerCase().includes('does not have permission')) {
-                const userFriendlyError = "Ошибка разрешений. Убедитесь, что ваш API-ключ имеет доступ к Gemini API. Автоматическое переподключение остановлено.";
-                setTranscriptHistory(prev => [...prev, {
-                    id: Date.now().toString(),
-                    author: 'assistant',
-                    text: userFriendlyError,
-                    type: 'error',
-                    timestamp: Date.now()
-                }]);
-                setStatus('Ошибка разрешений. Проверьте API-ключ.');
-                if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-                retryAttemptRef.current = 0;
-                retryCycleRef.current = 1;
-            } else {
-                scheduleRetry(errorMessage);
-            }
+          scheduleRetry(errorMessage);
         }
     }
-  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, voiceSettings]);
+  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, voiceSettings, scheduleRetry]);
+  
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
+
 
   const playConnectionSound = useCallback(async () => {
     if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
@@ -2364,7 +2343,6 @@ ${formattedHistory}
             await outputAudioContextRef.current.resume();
         }
         retryAttemptRef.current = 0;
-        retryCycleRef.current = 1;
         if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
         connect();
      }
@@ -2661,24 +2639,25 @@ ${formattedHistory}
   };
 
   const CONTROLS_AREA_HEIGHT_NUM = 11;
-  const TAB_BAR_HEIGHT_NUM = 3.5; // Slightly increased to show the "narrow bar" when collapsed
-  const TOTAL_BOTTOM_AREA_HEIGHT_NUM = CONTROLS_AREA_HEIGHT_NUM + TAB_BAR_HEIGHT_NUM;
-
-  const CONTROLS_AREA_HEIGHT = `${CONTROLS_AREA_HEIGHT_NUM}rem`;
-  const TOTAL_BOTTOM_AREA_HEIGHT = `${TOTAL_BOTTOM_AREA_HEIGHT_NUM}rem`;
+  const TAB_BAR_HEIGHT_NUM = 3.5; 
   
-  // New constant for the top offset when the panel is expanded.
-  // It accounts for App's padding (p-6 -> 1.5rem), header height (h-20 -> 5rem), and gap (gap-6 -> 1.5rem).
+  const CONTROLS_AREA_HEIGHT = `${CONTROLS_AREA_HEIGHT_NUM}rem`;
   const EXPANDED_TOP_OFFSET = '8rem';
+  const PANEL_BOTTOM_OFFSET = `calc(1.5rem + ${CONTROLS_AREA_HEIGHT})`;
+  // Calculate how much the panel needs to move down to be "collapsed"
+  const panelHeightStyle = `calc(100vh - ${EXPANDED_TOP_OFFSET} - ${PANEL_BOTTOM_OFFSET})`;
+  const collapsedTransformY = `calc(${panelHeightStyle} - ${TAB_BAR_HEIGHT_NUM}rem)`;
+
 
   return (
     <>
       {/* --- CHAT/TOOL PANEL (ANIMATED) --- */}
       <div 
-        className={`fixed left-6 right-6 transition-[top] duration-700 ease-in-out`}
+        className={`fixed left-6 right-6 transition-transform duration-700 ease-in-out`}
         style={{ 
-            top: isChatCollapsed ? `calc(100vh - 1.5rem - ${TOTAL_BOTTOM_AREA_HEIGHT})` : EXPANDED_TOP_OFFSET, 
-            bottom: `calc(1.5rem + ${CONTROLS_AREA_HEIGHT})` 
+            top: EXPANDED_TOP_OFFSET, 
+            bottom: PANEL_BOTTOM_OFFSET,
+            transform: isChatCollapsed ? `translateY(${collapsedTransformY})` : 'translateY(0)',
         }}
         aria-hidden={isChatCollapsed}
       >
