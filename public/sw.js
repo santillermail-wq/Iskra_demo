@@ -28,8 +28,11 @@ self.addEventListener('fetch', event => {
 
         return fetch(fetchRequest).then(
           response => {
-            // Check if we received a valid response
-            if (!response || response.status !== 200 || response.type !== 'basic') {
+            // Check if we received a valid response.
+            // The original check for `response.type !== 'basic'` was too strict
+            // and prevented caching of essential cross-origin scripts (e.g., React from CDN).
+            // We now only check for a 200 OK status, which allows caching of valid CORS responses.
+            if (!response || response.status !== 200) {
               return response;
             }
 
