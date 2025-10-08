@@ -162,7 +162,7 @@ const mapErrorToUserMessage = (rawError: string): string => {
     if (lowerError.includes('api_key') || lowerError.includes('authentication credential')) {
         return 'Ошибка аутентификации. Пожалуйста, убедитесь, что ваш API-ключ правильно настроен.';
     }
-    if (lowerError.includes('network error')) {
+    if (lowerError.includes('network error') || lowerError.includes('failed to fetch')) {
         return 'Ошибка сети. Проверьте ваше интернет-соединение.';
     }
     if (lowerError.includes('closed unexpectedly')) {
@@ -427,6 +427,41 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   }, [isDictaphoneRecording, isConnected, isConnecting]);
 
 
+  // Effect for handling online/offline status
+  useEffect(() => {
+    const handleOnline = () => {
+        setStatus('Сеть восстановлена. Нажмите на микрофон для подключения.');
+    };
+    const handleOffline = () => {
+        setStatus('Вы оффлайн. Функциональность ограничена.');
+        setTranscriptHistory(prev => {
+            const lastMessageIsOfflineError = prev.length > 0 && prev[prev.length - 1].text.includes('оффлайн');
+            if (lastMessageIsOfflineError) return prev; // Avoid duplicate messages
+            return [...prev, {
+                id: Date.now().toString(),
+                author: 'assistant',
+                text: 'Соединение потеряно, вы оффлайн. Некоторые функции могут быть недоступны.',
+                type: 'error',
+                timestamp: Date.now()
+            }];
+        });
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Initial check
+    if (!navigator.onLine) {
+        handleOffline();
+    }
+
+    return () => {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+
   // --- Core Logic ---
   const playPageTurnSound = useCallback(async (reverse = false) => {
     if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
@@ -579,6 +614,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
         if (isIntentionalDisconnectRef.current) return;
         if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
 
+        if (!navigator.onLine) {
+            setStatus('Не удалось подключиться: вы оффлайн.');
+            retryAttemptRef.current = 0;
+            return;
+        }
+
         const userFriendlyError = mapErrorToUserMessage(errorReason);
 
         setTranscriptHistory(prev => {
@@ -616,6 +657,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   const connect = useCallback(async () => {
     // Already connecting or connected, do nothing.
     if (isConnecting || isConnected) return;
+
+    if (!navigator.onLine) {
+        setStatus('Вы оффлайн. Для подключения к ассистенту нужен интернет.');
+        setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: 'Невозможно подключиться в оффлайн-режиме.', type: 'error', timestamp: Date.now() }]);
+        setIsConnecting(false);
+        return;
+    }
 
     setStatus('Подключение...');
     setIsConnecting(true);
@@ -2418,6 +2466,18 @@ ${formattedHistory}
 
     if (!textToSend && !fileContentToSend) return;
     
+    if (!navigator.onLine) {
+        setTranscriptHistory(prev => [...prev, {
+            id: Date.now().toString(),
+            author: 'assistant',
+            text: 'Вы оффлайн. Не могу отправить сообщение.',
+            type: 'error',
+            timestamp: Date.now()
+        }]);
+        setStatus('Вы оффлайн. Проверьте интернет-соединение.');
+        return;
+    }
+
     // Add user message to history only if it's not a file action
     if (!messageOverride) {
         setTranscriptHistory(prev => [

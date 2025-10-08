@@ -1,50 +1,18 @@
-const CACHE_NAME = 'ai-persona-assistant-cache-v1';
-const URLS_TO_CACHE = [
+const CACHE_NAME = 'ai-persona-assistant-cache-v2';
+const URLS_TO_PRECACHE = [
   '/',
-  '/index.html'
+  '/index.html',
+  '/manifest.json'
 ];
 
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then(cache => {
-        console.log('Opened cache');
-        return cache.addAll(URLS_TO_CACHE);
+        console.log('Service Worker: Caching app shell');
+        return cache.addAll(URLS_TO_PRECACHE);
       })
-  );
-});
-
-self.addEventListener('fetch', event => {
-  event.respondWith(
-    caches.match(event.request)
-      .then(response => {
-        // Cache hit - return response
-        if (response) {
-          return response;
-        }
-
-        // Clone the request because it's a stream and can only be consumed once
-        const fetchRequest = event.request.clone();
-
-        return fetch(fetchRequest).then(
-          response => {
-            // Check if we received a valid response
-            if (!response || response.status !== 200 || response.type !== 'basic') {
-              return response;
-            }
-
-            // Clone the response because it's also a stream
-            const responseToCache = response.clone();
-
-            caches.open(CACHE_NAME)
-              .then(cache => {
-                cache.put(event.request, responseToCache);
-              });
-
-            return response;
-          }
-        );
-      })
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -55,10 +23,50 @@ self.addEventListener('activate', event => {
       return Promise.all(
         cacheNames.map(cacheName => {
           if (cacheWhitelist.indexOf(cacheName) === -1) {
+            console.log('Service Worker: Deleting old cache', cacheName);
             return caches.delete(cacheName);
           }
         })
       );
-    })
+    }).then(() => self.clients.claim())
   );
+});
+
+self.addEventListener('fetch', event => {
+  // Use a cache-first strategy for GET requests.
+  // Other requests (e.g., POST to Gemini API) are not handled and will pass through to the network.
+  if (event.request.method === 'GET') {
+    event.respondWith(
+      caches.match(event.request)
+        .then(cachedResponse => {
+          // If a cached response is found, return it.
+          if (cachedResponse) {
+            return cachedResponse;
+          }
+
+          // If not in cache, fetch from the network.
+          return fetch(event.request).then(
+            networkResponse => {
+              // Check if the response is valid and cacheable.
+              // We cache successful responses (status 200) and opaque responses from CDNs.
+              if (networkResponse && (networkResponse.status === 200 || networkResponse.type === 'opaque')) {
+                // Clone the response because it's a one-time use stream.
+                const responseToCache = networkResponse.clone();
+                caches.open(CACHE_NAME)
+                  .then(cache => {
+                    cache.put(event.request, responseToCache);
+                  });
+              }
+              // Return the network response.
+              return networkResponse;
+            }
+          ).catch(error => {
+            // This catch handles network errors, e.g., when the user is offline.
+            // For now, we just let the fetch fail, and the app's UI should handle it.
+            console.log('Service Worker: Fetch failed for', event.request.url, error);
+            // We must return a promise that resolves with undefined or rejects to let the browser handle the error.
+          });
+        })
+    );
+  }
 });
