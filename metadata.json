@@ -1,0 +1,7 @@
+{
+  "name": "AI Persona Assistant",
+  "description": "A multi-modal, cross-platform voice assistant that starts by conducting a personality test to personalize the user experience. This app implements the initial personality assessment module.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
