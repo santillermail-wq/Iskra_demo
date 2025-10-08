@@ -1,8 +1,7 @@
-
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { TranscriptItem, Source, FinanceData, Transaction, PlannerItem, NoteItem, ContactItem, CalendarEventItem, UserInstruction, VoiceSettings, StoredFile, Alarm, TimerState, StopwatchState } from '../types';
-import { sendTextMessage, getAi } from '../services/geminiService';
+// FIX: `apiCallWithRetry` is a separate export, not a property of `sendTextMessage`. It has been added to the import list.
+import { sendTextMessage, getAi, apiCallWithRetry } from '../services/geminiService';
 import { formatCurrency } from '../services/financeService';
 import { initDB, getAllInstructions, addInstruction, deleteInstructionById, getLatestChatLogForToday, saveChatLog, addFile, getAllFiles, getFileById, deleteFile, updateFile } from '../services/db';
 import { Modality, LiveServerMessage } from '@google/genai';
@@ -82,13 +81,6 @@ declare var docx: any;
 declare var pdfjsLib: any;
 declare var jspdf: any;
 
-// A Sentinel type for WakeLock may not be available in all TS versions
-declare interface WakeLockSentinel extends EventTarget {
-  release(): Promise<void>;
-  readonly released: boolean;
-  readonly type: 'screen';
-  onrelease: ((this: WakeLockSentinel, ev: Event) => any) | null;
-}
 
 // --- Helper Functions for Audio Processing ---
 function decode(base64: string) {
@@ -170,7 +162,7 @@ const mapErrorToUserMessage = (rawError: string): string => {
     if (lowerError.includes('api_key') || lowerError.includes('authentication credential')) {
         return 'Ошибка аутентификации. Пожалуйста, убедитесь, что ваш API-ключ правильно настроен.';
     }
-    if (lowerError.includes('network error') || lowerError.includes('failed to fetch')) {
+    if (lowerError.includes('network error')) {
         return 'Ошибка сети. Проверьте ваше интернет-соединение.';
     }
     if (lowerError.includes('closed unexpectedly')) {
@@ -325,7 +317,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   const [isDbReady, setIsDbReady] = useState(false);
   const [highlightedFileId, setHighlightedFileId] = useState<number | null>(null);
   const [activeAlarm, setActiveAlarm] = useState<Alarm | null>(null);
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   const internalTimersRef = useRef<Map<string, TimerState>>(new Map());
   const internalStopwatchesRef = useRef<Map<string, StopwatchState>>(new Map());
@@ -352,12 +343,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
 
   // --- Refs for New Features ---
   const retryAttemptRef = useRef(0);
+  const retryCycleRef = useRef(1);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const userScrolledUpRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const currentChatLogIdRef = useRef<number | null>(null);
-  const wakeLockSentinelRef = useRef<WakeLockSentinel | null>(null);
   
   const loadInstructions = useCallback(async () => {
     if (isDbReady) {
@@ -429,10 +420,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
       setStatus('Запись диктофона... Нажмите стоп в диктофоне для завершения.');
     } else {
        if (!isConnected && !isConnecting) {
-          setStatus(isOnline ? 'Нажмите на микрофон или введите сообщение' : 'Вы оффлайн');
+          setStatus('Нажмите на микрофон или введите сообщение');
        }
     }
-  }, [isDictaphoneRecording, isConnected, isConnecting, isOnline]);
+  }, [isDictaphoneRecording, isConnected, isConnecting]);
 
 
   // --- Core Logic ---
@@ -489,62 +480,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     source.stop(audioCtx.currentTime + duration);
   }, []);
 
-  // FIX: Moved playConnectionSound and playDisconnectSound before the `connect` function that uses them to resolve a "used before declaration" error.
-  const playConnectionSound = useCallback(async () => {
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-        const WebkitAudioContext = (window as any).webkitAudioContext;
-        outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-    }
-    const audioCtx = outputAudioContextRef.current;
-    if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
-
-    const oscillator = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-
-    oscillator.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    
-    // "Bamboo" or "Wooden" bell sound
-    oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(659.25, audioCtx.currentTime); // E5 note
-    
-    gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-    gainNode.gain.linearRampToValueAtTime(0.7, audioCtx.currentTime + 0.01);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.3);
-
-    oscillator.start(audioCtx.currentTime);
-    oscillator.stop(audioCtx.currentTime + 0.35);
-  }, []);
-
-   const playDisconnectSound = useCallback(async () => {
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-      const WebkitAudioContext = (window as any).webkitAudioContext;
-      outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-    }
-    const audioCtx = outputAudioContextRef.current;
-     if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
-
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-    osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    
-    osc.type = 'sine';
-    // Descending notes (e.g., G4 -> E4)
-    osc.frequency.setValueAtTime(392.00, audioCtx.currentTime); 
-    osc.frequency.linearRampToValueAtTime(329.63, audioCtx.currentTime + 0.2);
-    
-    gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4);
-
-    osc.start(audioCtx.currentTime);
-    osc.stop(audioCtx.currentTime + 0.4);
-  }, []);
-
   const handleCollapse = useCallback(() => {
     if (isChatCollapsed || isClosing) return;
     playPageTurnSound(true); // Play reverse sound on collapse
@@ -559,12 +494,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   }, [isChatCollapsed]);
 
   const disconnect = useCallback(async (isSilent = false) => {
-    // Release Wake Lock
-    if (wakeLockSentinelRef.current) {
-        wakeLockSentinelRef.current.release();
-        wakeLockSentinelRef.current = null;
-    }
-    
     if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
 
     if (sessionPromiseRef.current) {
@@ -602,86 +531,77 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     setIsConnected(false);
     setUserSpeaking(false);
     if (!isSilent && !isDictaphoneRecordingRef.current) {
-      setStatus(isOnline ? 'Нажмите на микрофон или введите сообщение' : 'Вы оффлайн');
+      setStatus('Нажмите на микрофон или введите сообщение');
     }
-  }, [isOnline]);
+  }, []);
 
   const connect = useCallback(async () => {
-    const MAX_RETRIES = 5;
-
-    const handleConnectionLoss = (errorReason: string) => {
-        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-        if (isIntentionalDisconnectRef.current) return;
-        
-        const userFriendlyError = mapErrorToUserMessage(errorReason);
-        setTranscriptHistory(prev => [...prev, {
+    // FIX: Moved scheduleRetry inside connect to resolve circular dependency and "used before declaration" error.
+    const scheduleRetry = (errorReason: string) => {
+      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+  
+      const userFriendlyError = mapErrorToUserMessage(errorReason);
+  
+      setTranscriptHistory(prev => {
+        const lastMessageIsError = prev.length > 0 && prev[prev.length-1].type === 'error';
+        const newError = {
             id: Date.now().toString(),
             author: 'assistant' as const,
             text: `Связь потеряна. ${userFriendlyError} Пытаюсь переподключиться...`,
             type: 'error' as const,
             timestamp: Date.now()
-        }]);
-        
-        if (!isOnline) {
-            setStatus('Вы оффлайн. Соединение возобновится при подключении к сети.');
-            return;
-        }
-
-        retryAttemptRef.current++;
-
-        if (retryAttemptRef.current > MAX_RETRIES) {
-            setStatus('Не удалось подключиться. Попробуйте вручную.');
-            setTranscriptHistory(prev => [...prev, {
-                id: Date.now().toString(),
-                author: 'assistant' as const,
-                text: 'Не удалось восстановить соединение. Нажмите на микрофон, чтобы попробовать снова.',
-                type: 'error' as const,
-                timestamp: Date.now()
-            }]);
-            retryAttemptRef.current = 0;
-            disconnect(true);
-            return;
-        }
-
-        const delay = Math.pow(2, retryAttemptRef.current) * 1000; // Exponential backoff: 2s, 4s, 8s...
-        setStatus(`Попытка переподключения ${retryAttemptRef.current}/${MAX_RETRIES}...`);
-        retryTimeoutRef.current = setTimeout(() => connect(), delay);
+        };
+        // To avoid spamming errors, replace the last one if it was also an error.
+        return lastMessageIsError ? [...prev.slice(0, -1), newError] : [...prev, newError];
+      });
+      
+      retryAttemptRef.current++;
+  
+      if (retryAttemptRef.current > 5) {
+          retryCycleRef.current++;
+          retryAttemptRef.current = 1;
+  
+          if (retryCycleRef.current > 3) {
+              setStatus('Не удалось подключиться. Попробуйте вручную или подождите.');
+              setTranscriptHistory(prev => [...prev, {
+                  id: Date.now().toString(),
+                  author: 'assistant' as const,
+                  text: 'Не удалось восстановить соединение после нескольких попыток. Нажмите на микрофон, чтобы попробовать снова.',
+                  type: 'error' as const,
+                  timestamp: Date.now()
+              }]);
+              retryCycleRef.current = 1; // Reset for next manual attempt
+              return; // Stop retrying
+          } else {
+              setStatus(`Пауза 1 минута перед следующей попыткой...`);
+              retryTimeoutRef.current = setTimeout(() => connect(), 60000);
+              return;
+          }
+      }
+  
+      const delay = 3000 * retryAttemptRef.current;
+      setStatus(`Попытка ${retryAttemptRef.current}/5 (Цикл ${retryCycleRef.current})...`);
+      retryTimeoutRef.current = setTimeout(() => connect(), delay);
     };
 
-    // Pre-flight checks
+    // Already connecting or connected, do nothing.
     if (isConnecting || isConnected) return;
-    if (!isOnline) {
-        setStatus('Вы оффлайн');
-        return;
-    }
 
-    try {
-        const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-        if (permissionStatus.state === 'denied') {
-            setStatus('Доступ к микрофону заблокирован');
-            setTranscriptHistory(prev => [...prev, {
-                id: Date.now().toString(),
-                author: 'assistant' as const,
-                text: 'Доступ к микрофону заблокирован в настройках вашего браузера. Пожалуйста, разрешите доступ, чтобы продолжить.',
-                type: 'error' as const,
-                timestamp: Date.now()
-            }]);
-            return;
-        }
-    } catch (e) {
-        console.warn("Permissions API not supported, proceeding with connection attempt.");
-    }
-    
     setStatus('Подключение...');
     setIsConnecting(true);
     isIntentionalDisconnectRef.current = false;
     
     try {
+        // ALWAYS fetch the latest instructions and chat history from the DB before connecting.
+        // This prevents issues with stale closures during retries.
         const currentInstructions = await getAllInstructions();
         const todayKey = getTodayDateKey();
         const latestLog = await getLatestChatLogForToday(todayKey);
+        
         const currentChatLog = latestLog ? latestLog.history : [];
         currentChatLogIdRef.current = latestLog ? latestLog.id : null;
+        
+        // Also ensure the UI state is synchronized with the latest from the DB.
         setTranscriptHistory(currentChatLog);
 
         let instructionBlock = '';
@@ -749,15 +669,67 @@ ${formattedHistory}
                 tools: [
                   { googleSearch: {} },
                   { functionDeclarations: [
-                        setPanelStateFunctionDeclaration, addTransactionFunctionDeclaration, searchTransactionsFunctionDeclaration, editTransactionFunctionDeclaration, deleteTransactionFunctionDeclaration, replaceTransactionFunctionDeclaration, generateStatementFunctionDeclaration, calculateDailySpendingAllowanceFunctionDeclaration,
-                        clearChatHistoryFunctionDeclaration, clearAllRecordingsFunctionDeclaration, startDictaphoneRecordingFunctionDeclaration, stopDictaphoneRecordingFunctionDeclaration, playDictaphoneRecordingFunctionDeclaration, readDictaphoneTranscriptFunctionDeclaration,
-                        getDictaphoneTranscriptContentFunctionDeclaration, pauseDictaphonePlaybackFunctionDeclaration, stopDictaphonePlaybackFunctionDeclaration, setPlaybackSpeedFunctionDeclaration, searchDictaphoneRecordingsFunctionDeclaration, navigateToLinkFunctionDeclaration,
-                        getInformationFromUrlFunctionDeclaration, stopConversationFunctionDeclaration, endSessionFunctionDeclaration, addPlannerEntryFunctionDeclaration, getPlannerContentFunctionDeclaration, clearPlannerContentFunctionDeclaration, generateDailySummaryFunctionDeclaration,
-                        getTodaysAccomplishmentsFunctionDeclaration, addNoteFunctionDeclaration, getNotesFunctionDeclaration, updateNoteFunctionDeclaration, deleteNoteFunctionDeclaration, clearNotesFunctionDeclaration, addContactFunctionDeclaration, getContactsFunctionDeclaration,
-                        updateContactFunctionDeclaration, deleteContactFunctionDeclaration, clearContactsFunctionDeclaration, addCalendarEventFunctionDeclaration, getCalendarEventsFunctionDeclaration, updateCalendarEventFunctionDeclaration, deleteCalendarEventFunctionDeclaration,
-                        clearCalendarEventsFunctionDeclaration, saveUserInstructionFunctionDeclaration, getUserInstructionsFunctionDeclaration, deleteUserInstructionFunctionDeclaration, getCurrentTimeAndDateFunctionDeclaration, setVoiceSettingsFunctionDeclaration, createAndDownloadFileFunctionDeclaration,
-                        saveFileToStorageFunctionDeclaration, getFilesFromStorageFunctionDeclaration, readFileFromStorageFunctionDeclaration, updateFileInStorageFunctionDeclaration, deleteFileFromStorageFunctionDeclaration, setAlarmFunctionDeclaration, deleteAlarmFunctionDeclaration,
-                        stopAlarmFunctionDeclaration, startTimerFunctionDeclaration, stopTimerFunctionDeclaration, startStopwatchFunctionDeclaration, stopStopwatchFunctionDeclaration,
+                        setPanelStateFunctionDeclaration,
+                        addTransactionFunctionDeclaration,
+                        searchTransactionsFunctionDeclaration,
+                        editTransactionFunctionDeclaration,
+                        deleteTransactionFunctionDeclaration,
+                        replaceTransactionFunctionDeclaration,
+                        generateStatementFunctionDeclaration,
+                        calculateDailySpendingAllowanceFunctionDeclaration,
+                        clearChatHistoryFunctionDeclaration, 
+                        clearAllRecordingsFunctionDeclaration,
+                        startDictaphoneRecordingFunctionDeclaration,
+                        stopDictaphoneRecordingFunctionDeclaration,
+                        playDictaphoneRecordingFunctionDeclaration,
+                        readDictaphoneTranscriptFunctionDeclaration,
+                        getDictaphoneTranscriptContentFunctionDeclaration,
+                        pauseDictaphonePlaybackFunctionDeclaration,
+                        stopDictaphonePlaybackFunctionDeclaration,
+                        setPlaybackSpeedFunctionDeclaration,
+                        searchDictaphoneRecordingsFunctionDeclaration,
+                        navigateToLinkFunctionDeclaration,
+                        getInformationFromUrlFunctionDeclaration,
+                        stopConversationFunctionDeclaration,
+                        endSessionFunctionDeclaration,
+                        addPlannerEntryFunctionDeclaration,
+                        getPlannerContentFunctionDeclaration,
+                        clearPlannerContentFunctionDeclaration,
+                        generateDailySummaryFunctionDeclaration,
+                        getTodaysAccomplishmentsFunctionDeclaration,
+                        addNoteFunctionDeclaration,
+                        getNotesFunctionDeclaration,
+                        updateNoteFunctionDeclaration,
+                        deleteNoteFunctionDeclaration,
+                        clearNotesFunctionDeclaration,
+                        addContactFunctionDeclaration,
+                        getContactsFunctionDeclaration,
+                        updateContactFunctionDeclaration,
+                        deleteContactFunctionDeclaration,
+                        clearContactsFunctionDeclaration,
+                        addCalendarEventFunctionDeclaration,
+                        getCalendarEventsFunctionDeclaration,
+                        updateCalendarEventFunctionDeclaration,
+                        deleteCalendarEventFunctionDeclaration,
+                        clearCalendarEventsFunctionDeclaration,
+                        saveUserInstructionFunctionDeclaration,
+                        getUserInstructionsFunctionDeclaration,
+                        deleteUserInstructionFunctionDeclaration,
+                        getCurrentTimeAndDateFunctionDeclaration,
+                        setVoiceSettingsFunctionDeclaration,
+                        createAndDownloadFileFunctionDeclaration,
+                        saveFileToStorageFunctionDeclaration,
+                        getFilesFromStorageFunctionDeclaration,
+                        readFileFromStorageFunctionDeclaration,
+                        updateFileInStorageFunctionDeclaration,
+                        deleteFileFromStorageFunctionDeclaration,
+                        setAlarmFunctionDeclaration,
+                        deleteAlarmFunctionDeclaration,
+                        stopAlarmFunctionDeclaration,
+                        startTimerFunctionDeclaration,
+                        stopTimerFunctionDeclaration,
+                        startStopwatchFunctionDeclaration,
+                        stopStopwatchFunctionDeclaration,
                   ] }
                 ],
             },
@@ -770,24 +742,15 @@ ${formattedHistory}
 
                     // Reset retry logic on successful connection
                     retryAttemptRef.current = 0;
+                    retryCycleRef.current = 1;
                     if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-                    
-                    // Acquire Wake Lock
-                    if ('wakeLock' in navigator) {
-                        try {
-                            wakeLockSentinelRef.current = await (navigator.wakeLock as any).request('screen');
-                            wakeLockSentinelRef.current!.onrelease = () => {
-                                console.log('Wake Lock was released by the system.');
-                                setTranscriptHistory(prev => [...prev, {id: Date.now().toString(), author:'assistant', text: 'Фоновый режим был прерван системой.', type:'error', timestamp: Date.now()}]);
-                            };
-                            console.log('Wake Lock is active.');
-                        } catch (err: any) {
-                            console.error(`${err.name}, ${err.message}`);
-                        }
-                    }
 
                     mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ 
-                        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+                        audio: { 
+                            echoCancellation: true, 
+                            noiseSuppression: true, 
+                            autoGainControl: true 
+                        } 
                     });
                     const source = inputAudioContextRef.current!.createMediaStreamSource(mediaStreamRef.current);
                     scriptProcessorRef.current = inputAudioContextRef.current!.createScriptProcessor(4096, 1, 1);
@@ -837,7 +800,11 @@ ${formattedHistory}
                                 const result = await executeFunctionCallRef.current(fc);
                                 sessionPromiseRef.current?.then(session => {
                                     session.sendToolResponse({
-                                        functionResponses: { id: fc.id, name: fc.name, response: { result }, }
+                                        functionResponses: {
+                                            id: fc.id,
+                                            name: fc.name,
+                                            response: { result },
+                                        }
                                     });
                                 });
                             }
@@ -899,9 +866,11 @@ ${formattedHistory}
                         currentAssistantTranscriptionRef.current += newText;
                         setTranscriptHistory(prev => {
                             const last = prev[prev.length - 1];
+                            // If the last message was from the assistant and not an error, update it.
                             if (last?.author === 'assistant' && last.type === 'message') {
                                 return [...prev.slice(0, -1), { ...last, text: currentAssistantTranscriptionRef.current }];
                             }
+                            // Otherwise, add a new message.
                             return [...prev, { id: Date.now().toString() + Math.random(), author: 'assistant', text: currentAssistantTranscriptionRef.current, type: 'message', timestamp: Date.now() }];
                         });
                     }
@@ -933,13 +902,21 @@ ${formattedHistory}
                        if (sources.length > 0) {
                            setTranscriptHistory(prev => {
                                const lastAssistantMessageIndex = findLastIndex(prev, (item: TranscriptItem) => item.author === 'assistant');
+
                                if (lastAssistantMessageIndex !== -1) {
                                    const updatedHistory = [...prev];
                                    const messageToUpdate = updatedHistory[lastAssistantMessageIndex];
+                                   
                                    const existingSources = messageToUpdate.sources || [];
-                                   const newSources = sources.filter((source) => !existingSources.some((s) => s.uri === source.uri));
+                                   const newSources = sources.filter(
+                                       (source) => !existingSources.some((s) => s.uri === source.uri)
+                                   );
+
                                    if (newSources.length > 0) {
-                                       updatedHistory[lastAssistantMessageIndex] = { ...messageToUpdate, sources: [...existingSources, ...newSources], };
+                                       updatedHistory[lastAssistantMessageIndex] = {
+                                           ...messageToUpdate,
+                                           sources: [...existingSources, ...newSources],
+                                       };
                                        return updatedHistory;
                                    }
                                }
@@ -950,15 +927,35 @@ ${formattedHistory}
                 },
                 onerror: (e: any) => {
                     console.error('Session error:', e);
+                    const errorMessage = e.message || 'An unknown error occurred.';
                     setIsConnecting(false);
                     disconnect(true);
-                    handleConnectionLoss(e.message || 'An unknown error occurred.');
+                    if (!isIntentionalDisconnectRef.current) {
+                        if (errorMessage.toLowerCase().includes('does not have permission')) {
+                            const userFriendlyError = "Ошибка разрешений. Убедитесь, что ваш API-ключ имеет доступ к Gemini API. Автоматическое переподключение остановлено.";
+                            setTranscriptHistory(prev => [...prev, {
+                                id: Date.now().toString(),
+                                author: 'assistant',
+                                text: userFriendlyError,
+                                type: 'error',
+                                timestamp: Date.now()
+                            }]);
+                            setStatus('Ошибка разрешений. Проверьте API-ключ.');
+                            if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+                            retryAttemptRef.current = 0;
+                            retryCycleRef.current = 1;
+                        } else {
+                            scheduleRetry(errorMessage);
+                        }
+                    }
                 },
                 onclose: () => {
                     console.log('Session closed.');
                     setIsConnecting(false);
                     disconnect(true);
-                    handleConnectionLoss("Connection closed unexpectedly.");
+                     if (!isIntentionalDisconnectRef.current) {
+                        scheduleRetry("Connection closed unexpectedly.");
+                    }
                 },
             }
         });
@@ -966,36 +963,83 @@ ${formattedHistory}
     } catch (error) {
         setIsConnecting(false);
         console.error(`Failed to connect:`, error);
-        handleConnectionLoss((error as Error).message || "Failed to initialize connection.");
+        if (!isIntentionalDisconnectRef.current) {
+          const errorMessage = (error as Error).message || "Failed to initialize connection.";
+            if (errorMessage.toLowerCase().includes('does not have permission')) {
+                const userFriendlyError = "Ошибка разрешений. Убедитесь, что ваш API-ключ имеет доступ к Gemini API. Автоматическое переподключение остановлено.";
+                setTranscriptHistory(prev => [...prev, {
+                    id: Date.now().toString(),
+                    author: 'assistant',
+                    text: userFriendlyError,
+                    type: 'error',
+                    timestamp: Date.now()
+                }]);
+                setStatus('Ошибка разрешений. Проверьте API-ключ.');
+                if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+                retryAttemptRef.current = 0;
+                retryCycleRef.current = 1;
+            } else {
+                scheduleRetry(errorMessage);
+            }
+        }
     }
-  }, [disconnect, isConnected, isConnecting, voiceSettings, isOnline, playConnectionSound]);
+  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, voiceSettings]);
 
-  // Network Status Handler
-  useEffect(() => {
-    const handleOnline = () => {
-        setIsOnline(true);
-        setStatus('Вы снова в сети. Переподключаюсь...');
-        isIntentionalDisconnectRef.current = false;
-        retryAttemptRef.current = 0; // Reset retries on network recovery
-        connect();
-    };
-    const handleOffline = () => {
-        setIsOnline(false);
-        setStatus('Вы оффлайн');
-        isIntentionalDisconnectRef.current = true; // Prevent retries while offline
-        if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-        disconnect(true);
-    };
+  const playConnectionSound = useCallback(async () => {
+    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+        const WebkitAudioContext = (window as any).webkitAudioContext;
+        outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
+    }
+    const audioCtx = outputAudioContextRef.current;
+    if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+    }
 
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
 
-    return () => {
-        window.removeEventListener('online', handleOnline);
-        window.removeEventListener('offline', handleOffline);
-    };
-  }, [connect, disconnect]);
-  
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    
+    // "Bamboo" or "Wooden" bell sound
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(659.25, audioCtx.currentTime); // E5 note
+    
+    gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.7, audioCtx.currentTime + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.3);
+
+    oscillator.start(audioCtx.currentTime);
+    oscillator.stop(audioCtx.currentTime + 0.35);
+  }, []);
+
+   const playDisconnectSound = useCallback(async () => {
+    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+      // Don't create a new one, just exit if it's not ready
+      return;
+    }
+    const audioCtx = outputAudioContextRef.current;
+     if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+    }
+
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    
+    osc.type = 'sine';
+    // Descending notes (e.g., G4 -> E4)
+    osc.frequency.setValueAtTime(392.00, audioCtx.currentTime); 
+    osc.frequency.linearRampToValueAtTime(329.63, audioCtx.currentTime + 0.2);
+    
+    gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4);
+
+    osc.start(audioCtx.currentTime);
+    osc.stop(audioCtx.currentTime + 0.4);
+  }, []);
+
     const findTransaction = useCallback((query: string): Transaction | null => {
         const transactions = financeData.transactions;
         if (transactions.length === 0) return null;
@@ -1093,15 +1137,22 @@ ${formattedHistory}
         return { totalBalance, creditCardBalance, cashBalance };
     }, []);
 
+    // FIX: Moved `synthesizeSpeech` and `playAudio` before `executeFunctionCall`
+    // to resolve "used before declaration" errors as they are dependencies.
     const synthesizeSpeech = useCallback(async (text: string): Promise<Uint8Array> => {
-        const audioChunks: Uint8Array[] = [];
-        try {
-            await new Promise<void>((resolve, reject) => {
-                 const sessionPromise = getAi().live.connect({
+        const speechTask = () => new Promise<Uint8Array>((resolve, reject) => {
+            const audioChunks: Uint8Array[] = [];
+            try {
+                const sessionPromise = getAi().live.connect({
                     model: 'gemini-2.5-flash-native-audio-preview-09-2025',
                     config: {
                         responseModalities: [Modality.AUDIO],
-                        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' }, ...voiceSettings }, },
+                        speechConfig: {
+                            voiceConfig: { 
+                                prebuiltVoiceConfig: { voiceName: 'Zephyr' },
+                                ...voiceSettings
+                            },
+                        },
                         systemInstruction: `You are a text-to-speech engine. Your only task is to say the following text exactly as it is written, without any additions or conversational filler. After you have said the text, do not say anything else. The text is: "${text}"`,
                     },
                     callbacks: {
@@ -1109,39 +1160,51 @@ ${formattedHistory}
                             try {
                                 const session = await sessionPromise;
                                 const silentFrame = new Uint8Array(320); // 10ms of 16-bit PCM silence
-                                session.sendRealtimeInput({ media: { data: encode(silentFrame), mimeType: 'audio/pcm;rate=16000' } });
-                            } catch (e) { reject(new Error('Failed to initiate speech synthesis.')); }
+                                const pcmBlob = {
+                                    data: encode(silentFrame),
+                                    mimeType: 'audio/pcm;rate=16000',
+                                };
+                                session.sendRealtimeInput({ media: pcmBlob });
+                            } catch (e) {
+                                console.error("Error triggering TTS response", e);
+                                reject(new Error('Failed to initiate speech synthesis.'));
+                            }
                         },
                         onmessage: (message: LiveServerMessage) => {
                             if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
-                                audioChunks.push(decode(message.serverContent.modelTurn.parts[0].inlineData.data));
+                                const base64Audio = message.serverContent.modelTurn.parts[0].inlineData.data;
+                                audioChunks.push(decode(base64Audio));
                             }
                             if (message.serverContent?.turnComplete) {
                                 sessionPromise.then(s => s.close()).catch(console.error);
                             }
                         },
-                        onerror: (e: any) => reject(e),
-                        onclose: () => resolve(),
+                        onerror: (e: any) => {
+                            console.error('TTS Session error:', e);
+                            reject(e);
+                        },
+                        onclose: () => {
+                            if (audioChunks.length === 0) {
+                                console.warn("Speech synthesis resulted in no audio data.");
+                            }
+                            const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+                            const combined = new Uint8Array(totalLength);
+                            let offset = 0;
+                            for (const chunk of audioChunks) {
+                                combined.set(chunk, offset);
+                                offset += chunk.length;
+                            }
+                            resolve(combined);
+                        },
                     }
                 });
                 sessionPromise.catch(reject);
-            });
-
-            if (audioChunks.length === 0) return new Uint8Array(0);
-
-            const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
-            const combined = new Uint8Array(totalLength);
-            let offset = 0;
-            for (const chunk of audioChunks) {
-                combined.set(chunk, offset);
-                offset += chunk.length;
+            } catch(e) {
+                reject(e);
             }
-            return combined;
-
-        } catch (e) {
-            console.error("Error in synthesizeSpeech:", e);
-            return new Uint8Array(0);
-        }
+        });
+        // FIX: `apiCallWithRetry` is a standalone function, not a method on `sendTextMessage`.
+        return apiCallWithRetry(speechTask, 3, 1000);
     }, [voiceSettings]);
 
   const playAudio = useCallback(async (audioBytes: Uint8Array) => {
@@ -1176,6 +1239,7 @@ ${formattedHistory}
     }
   }, []);
 
+    // FIX: `handleRemoveFile` is used by `executeFunctionCall`, so it must be declared before it.
     const handleRemoveFile = useCallback(() => {
         setAttachedFile(null);
         setAttachedFileContent('');
@@ -2094,6 +2158,7 @@ ${formattedHistory}
                         if (todayMessages.length > 1) { // Only summarize if there's a conversation
                             const chatTextForSummary = todayMessages.map(msg => `${msg.author}: ${msg.text}`).join('\n');
                             const summaryPrompt = `Кратко, в одном-двух предложениях на русском языке, подведи итог этого диалога:\n\n---\n${chatTextForSummary}\n---`;
+                            // Call Gemini to summarize, using an empty history to not pollute the context
                             const summaryResponse = await sendTextMessage(summaryPrompt, []);
                             if (summaryResponse.text) {
                                 summaryParts.push(`Общение: ${summaryResponse.text}`);
@@ -2258,11 +2323,12 @@ ${formattedHistory}
         isIntentionalDisconnectRef.current = true;
         await playDisconnectSound();
         await disconnect();
-     } else if (!isDictaphoneRecording && !isConnecting) {
+     } else if (!isDictaphoneRecording) {
         if(outputAudioContextRef.current?.state === 'suspended') {
             await outputAudioContextRef.current.resume();
         }
         retryAttemptRef.current = 0;
+        retryCycleRef.current = 1;
         if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
         connect();
      }
@@ -2336,10 +2402,6 @@ ${formattedHistory}
     const textToSend = messageOverride || inputText.trim();
     const fileContentToSend = attachedFileContent;
 
-    if (!isOnline) {
-        setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: 'Вы оффлайн. Невозможно отправить сообщение.', type: 'error', timestamp: Date.now() }]);
-        return;
-    }
     if (!textToSend && !fileContentToSend) return;
     
     // Add user message to history only if it's not a file action
@@ -2386,6 +2448,7 @@ ${formattedHistory}
             setStatus('Выполнение команды...');
             for (const fc of response.functionCalls) {
                 const resultText = await executeFunctionCall(fc);
+                // Optionally add function call results to transcript for clarity
                  if (resultText !== 'ok' && resultText && !resultText.startsWith('[CONTEXT]')) {
                      setTranscriptHistory(prev => [
                          ...prev, 
@@ -2566,6 +2629,7 @@ ${formattedHistory}
   const TOTAL_BOTTOM_AREA_HEIGHT_NUM = CONTROLS_AREA_HEIGHT_NUM + TAB_BAR_HEIGHT_NUM;
 
   const CONTROLS_AREA_HEIGHT = `${CONTROLS_AREA_HEIGHT_NUM}rem`;
+  const TOTAL_BOTTOM_AREA_HEIGHT = `${TOTAL_BOTTOM_AREA_HEIGHT_NUM}rem`;
   
   // New constant for the top offset when the panel is expanded.
   // It accounts for App's padding (p-6 -> 1.5rem), header height (h-20 -> 5rem), and gap (gap-6 -> 1.5rem).
@@ -2575,10 +2639,9 @@ ${formattedHistory}
     <>
       {/* --- CHAT/TOOL PANEL (ANIMATED) --- */}
       <div 
-        className={`fixed left-6 right-6 transition-transform duration-700 ease-in-out`}
+        className={`fixed left-6 right-6 transition-[top] duration-700 ease-in-out`}
         style={{ 
-            transform: isChatCollapsed ? `translateY(calc(100vh - ${EXPANDED_TOP_OFFSET} - 1.5rem - ${TOTAL_BOTTOM_AREA_HEIGHT_NUM}rem))` : 'translateY(0)',
-            top: EXPANDED_TOP_OFFSET, 
+            top: isChatCollapsed ? `calc(100vh - 1.5rem - ${TOTAL_BOTTOM_AREA_HEIGHT})` : EXPANDED_TOP_OFFSET, 
             bottom: `calc(1.5rem + ${CONTROLS_AREA_HEIGHT})` 
         }}
         aria-hidden={isChatCollapsed}
@@ -2873,13 +2936,13 @@ ${formattedHistory}
             <div className="w-full flex items-center space-x-2 h-14 mb-6">
               <button
                   onClick={handleMicClick}
-                  disabled={isConnecting || isDictaphoneRecording || !isOnline}
+                  disabled={isConnecting || isDictaphoneRecording}
                   className={`flex-shrink-0 w-14 h-14 rounded-full flex items-center justify-center transition-all duration-300 ease-in-out shadow-lg focus:outline-none disabled:cursor-not-allowed`}
                   aria-label={isConnecting ? 'Connecting...' : !isConnected ? 'Start conversation' : 'Stop conversation'}
               >
                   <div className={`w-full h-full p-0.5 rounded-full transition-colors duration-300
                       ${isConnecting ? 'bg-yellow-500 animate-subtle-pulse' : ''}
-                      ${isDictaphoneRecording || !isOnline ? 'bg-gray-700' : ''}
+                      ${isDictaphoneRecording ? 'bg-gray-700' : ''}
                       ${isConnected ? 'bg-cyan-600' : 'bg-gray-600 hover:bg-gray-500'}
                   `}>
                       <div className="w-full h-full rounded-full flex items-center justify-center bg-gray-800">
@@ -2906,13 +2969,13 @@ ${formattedHistory}
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={handleInputKeyDown}
-                    placeholder={isDictaphoneRecording ? "Запись диктофона активна..." : isOnline ? "Спросите что-нибудь..." : "Вы оффлайн..."}
-                    disabled={isDictaphoneRecording || !isOnline}
+                    placeholder={isDictaphoneRecording ? "Запись диктофона активна..." : "Спросите что-нибудь..."}
+                    disabled={isDictaphoneRecording}
                     className="w-full h-full pl-5 pr-14 bg-black/30 border border-white/20 rounded-full text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-shadow duration-300 disabled:opacity-50"
                 />
                  <button
                     onClick={handleAttachFileClick}
-                    disabled={isDictaphoneRecording || !isOnline}
+                    disabled={isDictaphoneRecording}
                     className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition-colors disabled:opacity-50"
                     aria-label="Прикрепить файл"
                     title="Прикрепить файл"
@@ -2925,8 +2988,7 @@ ${formattedHistory}
               {(inputText || attachedFile) && (
                   <button 
                       onClick={() => handleSendText()}
-                      disabled={!isOnline}
-                      className="flex-shrink-0 w-14 h-14 bg-cyan-500 hover:bg-cyan-600 text-white rounded-full flex items-center justify-center transition-colors duration-300 disabled:bg-gray-500"
+                      className="flex-shrink-0 w-14 h-14 bg-cyan-500 hover:bg-cyan-600 text-white rounded-full flex items-center justify-center transition-colors duration-300"
                       aria-label="Send message"
                   >
                       <svg xmlns="http://www.w3.org/2000/svg" className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
