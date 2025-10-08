@@ -335,6 +335,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   const isIntentionalDisconnectRef = useRef(false);
   const alarmAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const triggeredAlarmsThisMinuteRef = useRef<Set<number>>(new Set());
+  const wakeLockSentinelRef = useRef<WakeLockSentinel | null>(null);
   
   const currentUserTranscriptionRef = useRef('');
   const currentAssistantTranscriptionRef = useRef('');
@@ -493,8 +494,47 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
       }
   }, [isChatCollapsed]);
 
+  const playDisconnectSound = useCallback(async () => {
+    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+      return;
+    }
+    const audioCtx = outputAudioContextRef.current;
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+    return new Promise<void>(resolve => {
+      const osc = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      osc.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, audioCtx.currentTime); // A4 note
+
+      gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.15);
+
+      osc.onended = () => resolve();
+      osc.start(audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + 0.15);
+    });
+  }, []);
+
   const disconnect = useCallback(async (isSilent = false) => {
+    if (!isSilent) {
+        await playDisconnectSound();
+    }
     if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+
+    if (wakeLockSentinelRef.current) {
+        try {
+            await wakeLockSentinelRef.current.release();
+            wakeLockSentinelRef.current = null;
+            console.log('Screen Wake Lock released.');
+        } catch (err: any) {
+            console.error(`Failed to release Wake Lock: ${err.name}, ${err.message}`);
+        }
+    }
 
     if (sessionPromiseRef.current) {
         try {
@@ -533,7 +573,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     if (!isSilent && !isDictaphoneRecordingRef.current) {
       setStatus('Нажмите на микрофон или введите сообщение');
     }
-  }, []);
+  }, [playDisconnectSound]);
 
   const connect = useCallback(async () => {
     // FIX: Moved scheduleRetry inside connect to resolve circular dependency and "used before declaration" error.
@@ -740,6 +780,28 @@ ${formattedHistory}
                     setStatus('Микрофон включен. Говорите.');
                     setIsConnected(true);
 
+                    if ('wakeLock' in navigator) {
+                        try {
+                            wakeLockSentinelRef.current = await navigator.wakeLock.request('screen');
+                            wakeLockSentinelRef.current.onrelease = () => {
+                                console.log('Wake Lock was released by the system.');
+                                wakeLockSentinelRef.current = null;
+                                if (isConnected) {
+                                    setTranscriptHistory(prev => [...prev, {
+                                        id: Date.now().toString(),
+                                        author: 'assistant',
+                                        text: 'Фоновый режим был прерван. Для стабильной работы держите приложение на экране.',
+                                        type: 'error',
+                                        timestamp: Date.now()
+                                    }]);
+                                }
+                            };
+                            console.log('Screen Wake Lock is active.');
+                        } catch (err: any) {
+                            console.error(`Wake Lock request failed: ${err.name}, ${err.message}`);
+                        }
+                    }
+
                     // Reset retry logic on successful connection
                     retryAttemptRef.current = 0;
                     retryCycleRef.current = 1;
@@ -929,8 +991,8 @@ ${formattedHistory}
                     console.error('Session error:', e);
                     const errorMessage = e.message || 'An unknown error occurred.';
                     setIsConnecting(false);
-                    disconnect(true);
                     if (!isIntentionalDisconnectRef.current) {
+                        disconnect(); // This will play the sound
                         if (errorMessage.toLowerCase().includes('does not have permission')) {
                             const userFriendlyError = "Ошибка разрешений. Убедитесь, что ваш API-ключ имеет доступ к Gemini API. Автоматическое переподключение остановлено.";
                             setTranscriptHistory(prev => [...prev, {
@@ -947,14 +1009,18 @@ ${formattedHistory}
                         } else {
                             scheduleRetry(errorMessage);
                         }
+                    } else {
+                         disconnect(true);
                     }
                 },
                 onclose: () => {
                     console.log('Session closed.');
                     setIsConnecting(false);
-                    disconnect(true);
                      if (!isIntentionalDisconnectRef.current) {
+                        disconnect(); // This will play the sound
                         scheduleRetry("Connection closed unexpectedly.");
+                    } else {
+                         disconnect(true);
                     }
                 },
             }
@@ -1011,33 +1077,6 @@ ${formattedHistory}
 
     oscillator.start(audioCtx.currentTime);
     oscillator.stop(audioCtx.currentTime + 0.35);
-  }, []);
-
-   const playDisconnectSound = useCallback(async () => {
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-      // Don't create a new one, just exit if it's not ready
-      return;
-    }
-    const audioCtx = outputAudioContextRef.current;
-     if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
-
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-    osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    
-    osc.type = 'sine';
-    // Descending notes (e.g., G4 -> E4)
-    osc.frequency.setValueAtTime(392.00, audioCtx.currentTime); 
-    osc.frequency.linearRampToValueAtTime(329.63, audioCtx.currentTime + 0.2);
-    
-    gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4);
-
-    osc.start(audioCtx.currentTime);
-    osc.stop(audioCtx.currentTime + 0.4);
   }, []);
 
     const findTransaction = useCallback((query: string): Transaction | null => {
@@ -2292,7 +2331,6 @@ ${formattedHistory}
                     resultText = "Микрофон выключен.";
                     isIntentionalDisconnectRef.current = true;
                     await synthesizeSpeech("Отключаюсь.");
-                    await playDisconnectSound();
                     await disconnect();
                     break;
                 case 'endSession':
@@ -2300,7 +2338,6 @@ ${formattedHistory}
                     isIntentionalDisconnectRef.current = true;
                     handleCollapse();
                     await synthesizeSpeech("До свидания.");
-                    await playDisconnectSound();
                     await disconnect();
                     break;
                 default:
@@ -2312,7 +2349,7 @@ ${formattedHistory}
             resultText = `Error executing function ${fc.name}.`;
         }
         return resultText;
-    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, playDisconnectSound, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudio]);
+    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudio]);
 
     useEffect(() => {
         executeFunctionCallRef.current = executeFunctionCall;
@@ -2321,7 +2358,6 @@ ${formattedHistory}
   const handleMicClick = async () => {
      if (isConnected) {
         isIntentionalDisconnectRef.current = true;
-        await playDisconnectSound();
         await disconnect();
      } else if (!isDictaphoneRecording) {
         if(outputAudioContextRef.current?.state === 'suspended') {
