@@ -70,7 +70,6 @@ import {
 let ai: GoogleGenAI | null = null;
 export const getAi = (): GoogleGenAI => {
     if (!ai) {
-        // Use process.env.API_KEY as required by the execution environment.
         ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     }
     return ai;
