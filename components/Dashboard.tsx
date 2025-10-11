@@ -2397,7 +2397,12 @@ ${formattedHistory}
             setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: message, type: 'alarm', timestamp: Date.now() }]);
             
             playAlarmSound();
-            synthesizeSpeech(message).then(playAudio);
+            synthesizeSpeech(message)
+                .then(playAudio)
+                .catch(error => {
+                    console.error("Failed to synthesize or play alarm sound:", error);
+                    // This catch block prevents the app from crashing if synthesis fails on load.
+                });
         }
 
     }, 1000); // Check every second
