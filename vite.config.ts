@@ -4,8 +4,15 @@ import react from '@vitejs/plugin-react';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
+  // Загружаем переменные окружения для текущего режима (development, production)
+  // Третий параметр '' загружает все переменные, а не только с префиксом VITE_
   const env = loadEnv(mode, process.cwd(), '');
+
   return {
+    define: {
+      // Делаем переменную API_KEY доступной в клиентском коде как process.env.API_KEY
+      'process.env.API_KEY': JSON.stringify(env.API_KEY)
+    },
     server: {
       port: 3000,
       host: '0.0.0.0',
@@ -15,9 +22,6 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@': path.resolve('.'),
       }
-    },
-    define: {
-      'process.env.API_KEY': JSON.stringify(env.API_KEY)
     },
     build: {
       // Увеличиваем лимит для предупреждения о размере чанка до 1500 kB.
@@ -35,5 +39,5 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
-  }
+  };
 });

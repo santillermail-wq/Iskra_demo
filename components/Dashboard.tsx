@@ -746,13 +746,37 @@ ${formattedHistory}
                     retryCycleRef.current = 1;
                     if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
 
-                    mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ 
-                        audio: { 
-                            echoCancellation: true, 
-                            noiseSuppression: true, 
-                            autoGainControl: true 
-                        } 
-                    });
+                    let stream;
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia({
+                            audio: {
+                                echoCancellation: true,
+                                noiseSuppression: true,
+                                autoGainControl: true,
+                            },
+                        });
+                    } catch (err) {
+                        console.warn('getUserMedia with constraints failed, falling back.', err);
+                        try {
+                            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        } catch (finalErr) {
+                            console.error('All getUserMedia attempts failed:', finalErr);
+                            const errorMessage = "Не удалось получить доступ к микрофону. Убедитесь, что он подключен и разрешен для этого сайта в настройках браузера.";
+                            setTranscriptHistory(prev => [...prev, {
+                                id: Date.now().toString(),
+                                author: 'assistant',
+                                text: errorMessage,
+                                type: 'error',
+                                timestamp: Date.now(),
+                            }]);
+                            setStatus('Ошибка доступа к микрофону');
+                            isIntentionalDisconnectRef.current = true; // Prevent retries
+                            await disconnect(true); // silent disconnect to clean up.
+                            return; // exit onopen
+                        }
+                    }
+                    mediaStreamRef.current = stream;
+                    
                     const source = inputAudioContextRef.current!.createMediaStreamSource(mediaStreamRef.current);
                     scriptProcessorRef.current = inputAudioContextRef.current!.createScriptProcessor(4096, 1, 1);
                     
