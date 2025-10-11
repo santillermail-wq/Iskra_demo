@@ -428,10 +428,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
 
   // --- Core Logic ---
   const playPageTurnSound = useCallback(async (reverse = false) => {
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-        const WebkitAudioContext = (window as any).webkitAudioContext;
-        outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 44100 });
-    }
+    if (!outputAudioContextRef.current) return;
     const audioCtx = outputAudioContextRef.current;
     if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
@@ -514,9 +511,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     const closePromises: Promise<void>[] = [];
     if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
         closePromises.push(inputAudioContextRef.current.close().catch(console.error));
+        inputAudioContextRef.current = null;
     }
     if (outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
         closePromises.push(outputAudioContextRef.current.close().catch(console.error));
+        outputAudioContextRef.current = null;
     }
     
     if (closePromises.length > 0) {
@@ -587,6 +586,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     // Already connecting or connected, do nothing.
     if (isConnecting || isConnected) return;
 
+    if (!inputAudioContextRef.current || !outputAudioContextRef.current) {
+        setStatus('Аудио не готово. Нажмите на микрофон еще раз.');
+        console.error('Audio contexts not initialized before connect call.');
+        return;
+    }
+
     setStatus('Подключение...');
     setIsConnecting(true);
     isIntentionalDisconnectRef.current = false;
@@ -643,24 +648,6 @@ ${formattedHistory}
 
         const ai = getAi();
         let nextStartTime = 0;
-
-        const WebkitAudioContext = (window as any).webkitAudioContext;
-        
-        // Ensure input audio context is ready and resumed
-        if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
-            inputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 16000 });
-        }
-        if (inputAudioContextRef.current.state === 'suspended') {
-            await inputAudioContextRef.current.resume();
-        }
-
-        // Ensure output audio context is ready and resumed
-        if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-            outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-        }
-        if (outputAudioContextRef.current.state === 'suspended') {
-            await outputAudioContextRef.current.resume();
-        }
 
         const outputNode = outputAudioContextRef.current.createGain();
         outputNode.connect(outputAudioContextRef.current.destination);
@@ -999,10 +986,7 @@ ${formattedHistory}
   }, [disconnect, isConnected, isConnecting, setTranscriptHistory]);
 
   const playConnectionSound = useCallback(async () => {
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-        const WebkitAudioContext = (window as any).webkitAudioContext;
-        outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-    }
+    if (!outputAudioContextRef.current) return;
     const audioCtx = outputAudioContextRef.current;
     if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
@@ -1027,10 +1011,7 @@ ${formattedHistory}
   }, []);
 
    const playDisconnectSound = useCallback(async () => {
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-      // Don't create a new one, just exit if it's not ready
-      return;
-    }
+    if (!outputAudioContextRef.current) return;
     const audioCtx = outputAudioContextRef.current;
      if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
@@ -1226,11 +1207,7 @@ ${formattedHistory}
     }, []);
 
   const playAudio = useCallback(async (audioBytes: Uint8Array) => {
-    if (audioBytes.length === 0) return;
-    const WebkitAudioContext = (window as any).webkitAudioContext;
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-        outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-    }
+    if (audioBytes.length === 0 || !outputAudioContextRef.current) return;
     if (outputAudioContextRef.current.state === 'suspended') {
         await outputAudioContextRef.current.resume();
     }
@@ -2342,6 +2319,24 @@ ${formattedHistory}
         await playDisconnectSound();
         await disconnect();
      } else if (!isDictaphoneRecording) {
+        // Centralized AudioContext creation and resume on user gesture
+        try {
+            const WebkitAudioContext = (window as any).webkitAudioContext;
+            if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
+                inputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 16000 });
+            }
+            await inputAudioContextRef.current.resume();
+
+            if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+                outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
+            }
+            await outputAudioContextRef.current.resume();
+        } catch (e) {
+            console.error("Failed to initialize and resume AudioContexts:", e);
+            setStatus("Ошибка аудио. Проверьте разрешения.");
+            return;
+        }
+
         retryAttemptRef.current = 0;
         retryCycleRef.current = 1;
         if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
@@ -2351,10 +2346,7 @@ ${formattedHistory}
 
   const playAlarmSound = useCallback(async () => {
     if (alarmAudioSourceRef.current) return;
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-        const WebkitAudioContext = (window as any).webkitAudioContext;
-        outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 44100 });
-    }
+    if (!outputAudioContextRef.current) return;
     const audioCtx = outputAudioContextRef.current;
      if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
