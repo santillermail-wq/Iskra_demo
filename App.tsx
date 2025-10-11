@@ -11,7 +11,7 @@ const App: React.FC = () => {
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
 
   useEffect(() => {
-    // FIX: Adhering to @google/genai guidelines to use process.env.API_KEY.
+    // Reverted to process.env.API_KEY as per platform requirements.
     const apiKey = process.env.API_KEY;
     if (!apiKey || apiKey.trim() === '' || apiKey === 'undefined') {
       setApiKeyError(
