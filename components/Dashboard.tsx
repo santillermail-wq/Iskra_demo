@@ -338,7 +338,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   
   const currentUserTranscriptionRef = useRef('');
   const currentAssistantTranscriptionRef = useRef('');
-  const executeFunctionCallRef = useRef<((fc: { name: string, args: any }) => Promise<string>) | null>(null);
+  const executeFunctionCallRef = useRef<((fc: { name?: string, args: any }) => Promise<string>) | null>(null);
   const isDictaphoneRecordingRef = useRef(isDictaphoneRecording);
 
   // --- Refs for New Features ---
@@ -796,16 +796,21 @@ ${formattedHistory}
                 onmessage: async (message: LiveServerMessage) => {
                     if (message.toolCall) {
                         for (const fc of message.toolCall.functionCalls) {
-                            if (executeFunctionCallRef.current) {
+                            // FIX: The `FunctionCall` type from the API has an optional `name` property.
+                            // Add a guard to ensure `fc.name` exists before processing the function call.
+                            if (executeFunctionCallRef.current && fc.name) {
                                 const result = await executeFunctionCallRef.current(fc);
                                 sessionPromiseRef.current?.then(session => {
-                                    session.sendToolResponse({
-                                        functionResponses: {
-                                            id: fc.id,
-                                            name: fc.name,
-                                            response: { result },
-                                        }
-                                    });
+                                    // Also guard for `id` required by `sendToolResponse`
+                                    if (fc.id) {
+                                        session.sendToolResponse({
+                                            functionResponses: {
+                                                id: fc.id,
+                                                name: fc.name,
+                                                response: { result },
+                                            }
+                                        });
+                                    }
                                 });
                             }
                         }
@@ -1243,7 +1248,12 @@ ${formattedHistory}
         }
     }, []);
 
-  const executeFunctionCall = useCallback(async (fc: { name: string, args: any }) => {
+  const executeFunctionCall = useCallback(async (fc: { name?: string, args: any }) => {
+        // FIX: Add a guard to handle function calls that may not have a name, as per the optional 'name' property in the FunctionCall type.
+        if (!fc.name) {
+            console.warn("Function call received without a name.", fc.args);
+            return 'Error: function call received without a name.';
+        }
         console.log(`Executing function call: ${fc.name}`, fc.args);
         let resultText = 'ok'; // Default success response
         try {
@@ -2352,21 +2362,37 @@ ${formattedHistory}
         await audioCtx.resume();
     }
     
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
+    // FIX: The original code had two errors:
+    // 1. `osc.loop = true;` is invalid because OscillatorNode does not have a `loop` property.
+    // 2. `alarmAudioSourceRef.current = osc;` caused a type mismatch because the ref expects an AudioBufferSourceNode.
+    // This revised implementation uses an OfflineAudioContext to render the oscillator's sound into an AudioBuffer.
+    // The buffer is then played using an AudioBufferSourceNode, which supports looping and matches the ref type.
+    const OfflineAudioContext = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    const duration = 0.5;
+    const offlineCtx = new OfflineAudioContext(1, audioCtx.sampleRate * duration, audioCtx.sampleRate);
+    
+    const osc = offlineCtx.createOscillator();
+    const gainNode = offlineCtx.createGain();
     osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
+    gainNode.connect(offlineCtx.destination);
 
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
-    osc.frequency.setValueAtTime(1046.50, audioCtx.currentTime + 0.1); // C6
+    osc.frequency.setValueAtTime(880, offlineCtx.currentTime); // A5
+    osc.frequency.setValueAtTime(1046.50, offlineCtx.currentTime + 0.1); // C6
     
-    gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4);
+    gainNode.gain.setValueAtTime(0.3, offlineCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, offlineCtx.currentTime + 0.4);
 
-    osc.loop = true;
     osc.start();
-    alarmAudioSourceRef.current = osc;
+    
+    const renderedBuffer = await offlineCtx.startRendering();
+    const source = audioCtx.createBufferSource();
+    source.buffer = renderedBuffer;
+    source.loop = true;
+    source.connect(audioCtx.destination);
+    source.start();
+    
+    alarmAudioSourceRef.current = source;
   }, []);
 
   // Effect for checking alarms

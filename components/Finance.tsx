@@ -238,12 +238,16 @@ const Finance: React.FC<FinanceProps> = ({ financeData, setFinanceData, searchTe
                                                 {(tx.paymentMethod === 'cash' || tx.paymentMethod === 'creditCard') && (
                                                     <div className="flex-shrink-0">
                                                         {tx.paymentMethod === 'cash' && (
-                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-400" title="Наличные" viewBox="0 0 20 20" fill="currentColor">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                                                              {/* FIX: The 'title' attribute is not valid on SVG elements in React. It should be a <title> child element for accessibility. */}
+                                                              <title>Наличные</title>
                                                               <path fillRule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2H4zm12 1a1 1 0 100-2H4a1 1 0 100 2h12zM2 13.5a1.5 1.5 0 011.5-1.5h13A1.5 1.5 0 0118 13.5v1a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 012 14.5v-1z" clipRule="evenodd" />
                                                             </svg>
                                                         )}
                                                         {tx.paymentMethod === 'creditCard' && (
-                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" title="Кредитная карта" viewBox="0 0 20 20" fill="currentColor">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                                                              {/* FIX: The 'title' attribute is not valid on SVG elements in React. It should be a <title> child element for accessibility. */}
+                                                              <title>Кредитная карта</title>
                                                               <path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" />
                                                               <path fillRule="evenodd" d="M18 9H2v6a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm3 0a1 1 0 011-1h1a1 1 0 110 2H8a1 1 0 01-1-1z" clipRule="evenodd" />
                                                             </svg>
