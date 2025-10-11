@@ -338,7 +338,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   
   const currentUserTranscriptionRef = useRef('');
   const currentAssistantTranscriptionRef = useRef('');
-  const executeFunctionCallRef = useRef<((fc: { name?: string, args: any }) => Promise<string>) | null>(null);
+  // FIX: Allow `args` to be optional on the function call object to match the type from `@google/genai`.
+  const executeFunctionCallRef = useRef<((fc: { name?: string, args?: any }) => Promise<string>) | null>(null);
   const isDictaphoneRecordingRef = useRef(isDictaphoneRecording);
 
   // --- Refs for New Features ---
@@ -1248,18 +1249,21 @@ ${formattedHistory}
         }
     }, []);
 
-  const executeFunctionCall = useCallback(async (fc: { name?: string, args: any }) => {
+  // FIX: Allow `args` to be optional on the function call object.
+  const executeFunctionCall = useCallback(async (fc: { name?: string, args?: any }) => {
         // FIX: Add a guard to handle function calls that may not have a name, as per the optional 'name' property in the FunctionCall type.
         if (!fc.name) {
             console.warn("Function call received without a name.", fc.args);
             return 'Error: function call received without a name.';
         }
-        console.log(`Executing function call: ${fc.name}`, fc.args);
+        // FIX: Default args to an empty object to prevent runtime errors if it's missing.
+        const args = fc.args || {};
+        console.log(`Executing function call: ${fc.name}`, args);
         let resultText = 'ok'; // Default success response
         try {
             switch (fc.name) {
                 case 'setAlarm': {
-                    const { time, label } = fc.args;
+                    const { time, label } = args;
                     // Basic validation
                     if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(time) && label) {
                         const newAlarm: Alarm = {
@@ -1278,7 +1282,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'deleteAlarm': {
-                    const query = fc.args.query.toLowerCase();
+                    const query = args.query.toLowerCase();
                     const initialLength = alarms.length;
                     setAlarms(prev => prev.filter(a => !a.time.includes(query) && !a.label.toLowerCase().includes(query)));
                     resultText = alarms.length < initialLength ? `Будильник по запросу "${query}" удален.` : `Будильник по запросу "${query}" не найден.`;
@@ -1300,7 +1304,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'startTimer': {
-                    const { durationInSeconds, label } = fc.args;
+                    const { durationInSeconds, label } = args;
                     const id = `timer_${Date.now()}`;
                     const endTime = Date.now() + durationInSeconds * 1000;
 
@@ -1317,7 +1321,7 @@ ${formattedHistory}
                     break;
                 }
                  case 'stopTimer': {
-                    const { label } = fc.args;
+                    const { label } = args;
                     let found = false;
                     for (const [id, timer] of internalTimersRef.current.entries()) {
                         if (timer.label.toLowerCase() === label.toLowerCase()) {
@@ -1331,7 +1335,7 @@ ${formattedHistory}
                     break;
                 }
                  case 'startStopwatch': {
-                    const { label } = fc.args;
+                    const { label } = args;
                     const id = `stopwatch_${Date.now()}`;
                     const newStopwatch: StopwatchState = { id, label, startTime: Date.now() };
                     internalStopwatchesRef.current.set(id, newStopwatch);
@@ -1339,7 +1343,7 @@ ${formattedHistory}
                     break;
                 }
                  case 'stopStopwatch': {
-                    const { label } = fc.args;
+                    const { label } = args;
                     let foundAndStopped = false;
                     for (const [id, stopwatch] of internalStopwatchesRef.current.entries()) {
                         if (stopwatch.label.toLowerCase() === label.toLowerCase()) {
@@ -1399,7 +1403,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'createAndDownloadFile': {
-                    const { filename, content } = fc.args;
+                    const { filename, content } = args;
                     if (!filename || typeof content !== 'string') {
                         resultText = 'Не удалось создать файл: отсутствуют имя файла или содержимое.';
                         break;
@@ -1513,8 +1517,8 @@ ${formattedHistory}
                 }
                 case 'getFilesFromStorage': {
                     let files = storedFiles;
-                    if (fc.args.fileType) {
-                        files = files.filter(f => f.type === fc.args.fileType);
+                    if (args.fileType) {
+                        files = files.filter(f => f.type === args.fileType);
                     }
                     if (files.length > 0) {
                         const fileList = files.map(f => `- ${f.name} (${f.type}, ${new Date(f.date).toLocaleDateString()})`).join('\n');
@@ -1527,7 +1531,7 @@ ${formattedHistory}
                     break;
                 }
                  case 'readFileFromStorage': {
-                    const { filename } = fc.args;
+                    const { filename } = args;
                     const fileToRead = storedFiles.find(f => f.name === filename);
                     if (!fileToRead) {
                         resultText = `[CONTEXT] Файл с именем "${filename}" не найден в хранилище.`;
@@ -1543,7 +1547,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'updateFileInStorage': {
-                    const { filename, newContent, newFilename } = fc.args;
+                    const { filename, newContent, newFilename } = args;
                     const fileToUpdate = storedFiles.find(f => f.name === filename);
                     if (!fileToUpdate) {
                         resultText = `Файл с именем "${filename}" не найден в хранилище.`;
@@ -1577,7 +1581,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'deleteFileFromStorage': {
-                    const { filename } = fc.args;
+                    const { filename } = args;
                     const fileToDelete = storedFiles.find(f => f.name === filename);
                      if (!fileToDelete) {
                         resultText = `Файл с именем "${filename}" не найден в хранилище.`;
@@ -1594,7 +1598,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'setVoiceSettings': {
-                    const { pitch, speakingRate, volumeGainDb } = fc.args;
+                    const { pitch, speakingRate, volumeGainDb } = args;
                     setVoiceSettings(prev => ({
                         pitch: typeof pitch === 'number' ? Math.max(-20.0, Math.min(20.0, pitch)) : prev.pitch,
                         speakingRate: typeof speakingRate === 'number' ? Math.max(0.25, Math.min(4.0, speakingRate)) : prev.speakingRate,
@@ -1611,10 +1615,10 @@ ${formattedHistory}
                     break;
                 }
                 case 'saveUserInstruction':
-                    const newInstruction = { text: fc.args.text, creationDate: Date.now() };
+                    const newInstruction = { text: args.text, creationDate: Date.now() };
                     await addInstruction(newInstruction);
                     await loadInstructions();
-                    resultText = `Хорошо, я запомнил правило: "${fc.args.text}"`;
+                    resultText = `Хорошо, я запомнил правило: "${args.text}"`;
                     break;
                 case 'getUserInstructions':
                     const instructions = await getAllInstructions();
@@ -1627,7 +1631,7 @@ ${formattedHistory}
                     break;
                 case 'deleteUserInstruction': {
                     const allInstructions = await getAllInstructions();
-                    const query = fc.args.query.toLowerCase();
+                    const query = args.query.toLowerCase();
                     let instructionToDelete: UserInstruction | undefined;
                     
                     const index = parseInt(query, 10);
@@ -1642,12 +1646,12 @@ ${formattedHistory}
                         await loadInstructions();
                         resultText = `Я удалил инструкцию: "${instructionToDelete.text}"`;
                     } else {
-                        resultText = `Не удалось найти инструкцию по вашему запросу: "${fc.args.query}"`;
+                        resultText = `Не удалось найти инструкцию по вашему запросу: "${args.query}"`;
                     }
                     break;
                 }
                 case 'setPanelState': {
-                    const { open, view, subViewState } = fc.args;
+                    const { open, view, subViewState } = args;
 
                     if (open === false) {
                         handleCollapse();
@@ -1676,8 +1680,8 @@ ${formattedHistory}
                     break;
                 }
                 case 'addNote':
-                    setNotes(prev => [{ id: Date.now(), text: fc.args.text, date: new Date().toISOString().slice(0, 10) }, ...prev]);
-                    resultText = `Заметка добавлена: "${fc.args.text}"`;
+                    setNotes(prev => [{ id: Date.now(), text: args.text, date: new Date().toISOString().slice(0, 10) }, ...prev]);
+                    resultText = `Заметка добавлена: "${args.text}"`;
                     break;
                 case 'getNotes':
                     resultText = notes.length > 0 ? `[CONTEXT] Вот ваши заметки:\n${notes.map(n => `- ${n.text}`).join('\n')}` : "[CONTEXT] У вас пока нет заметок.";
@@ -1685,19 +1689,19 @@ ${formattedHistory}
                 case 'updateNote': {
                     let found = false;
                     setNotes(prev => prev.map(note => {
-                        if (note.text.toLowerCase().includes(fc.args.query.toLowerCase())) {
+                        if (note.text.toLowerCase().includes(args.query.toLowerCase())) {
                             found = true;
-                            return { ...note, text: fc.args.newText };
+                            return { ...note, text: args.newText };
                         }
                         return note;
                     }));
-                    resultText = found ? `Заметка обновлена на "${fc.args.newText}".` : `Заметка со словами "${fc.args.query}" не найдена.`;
+                    resultText = found ? `Заметка обновлена на "${args.newText}".` : `Заметка со словами "${args.query}" не найдена.`;
                     break;
                 }
                 case 'deleteNote': {
                     const initialLength = notes.length;
-                    setNotes(prev => prev.filter(note => !note.text.toLowerCase().includes(fc.args.query.toLowerCase())));
-                    resultText = notes.length < initialLength ? `Заметка, содержащая "${fc.args.query}", удалена.` : `Заметка со словами "${fc.args.query}" не найдена.`;
+                    setNotes(prev => prev.filter(note => !note.text.toLowerCase().includes(args.query.toLowerCase())));
+                    resultText = notes.length < initialLength ? `Заметка, содержащая "${args.query}", удалена.` : `Заметка со словами "${args.query}" не найдена.`;
                     break;
                 }
                 case 'clearNotes':
@@ -1706,15 +1710,15 @@ ${formattedHistory}
                     break;
 
                 case 'addContact':
-                    setContacts(prev => [{ id: Date.now(), ...fc.args }, ...prev]);
-                    resultText = `Контакт "${fc.args.name}" добавлен.`;
+                    setContacts(prev => [{ id: Date.now(), ...args }, ...prev]);
+                    resultText = `Контакт "${args.name}" добавлен.`;
                     break;
                 case 'getContacts':
                     resultText = contacts.length > 0 ? `[CONTEXT] Вот ваш список контактов:\n${contacts.map(c => `- ${c.name} (${c.phone || 'нет номера'})`).join('\n')}` : "[CONTEXT] Ваш список контактов пуст.";
                     break;
                 case 'updateContact': {
                     let found = false;
-                    const { query, newName, newPhone, newEmail, newNotes } = fc.args;
+                    const { query, newName, newPhone, newEmail, newNotes } = args;
                     setContacts(prev => prev.map(contact => {
                         if (contact.name.toLowerCase() === query.toLowerCase()) {
                             found = true;
@@ -1733,8 +1737,8 @@ ${formattedHistory}
                 }
                 case 'deleteContact': {
                     const initialLength = contacts.length;
-                    setContacts(prev => prev.filter(c => c.name.toLowerCase() !== fc.args.query.toLowerCase()));
-                    resultText = contacts.length < initialLength ? `Контакт "${fc.args.query}" удален.` : `Контакт с именем "${fc.args.query}" не найден.`;
+                    setContacts(prev => prev.filter(c => c.name.toLowerCase() !== args.query.toLowerCase()));
+                    resultText = contacts.length < initialLength ? `Контакт "${args.query}" удален.` : `Контакт с именем "${args.query}" не найден.`;
                     break;
                 }
                 case 'clearContacts':
@@ -1743,11 +1747,11 @@ ${formattedHistory}
                     break;
 
                 case 'addCalendarEvent':
-                    setCalendarEvents(prev => [{ id: Date.now(), ...fc.args }, ...prev].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
-                    resultText = `Событие "${fc.args.title}" добавлено в календарь на ${fc.args.date}.`;
+                    setCalendarEvents(prev => [{ id: Date.now(), ...args }, ...prev].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
+                    resultText = `Событие "${args.title}" добавлено в календарь на ${args.date}.`;
                     break;
                 case 'getCalendarEvents': {
-                    const query = fc.args.dateQuery?.toLowerCase();
+                    const query = args.dateQuery?.toLowerCase();
                     let targetDate = new Date();
                     if (query === 'tomorrow' || query === 'завтра') {
                         targetDate.setDate(targetDate.getDate() + 1);
@@ -1761,7 +1765,7 @@ ${formattedHistory}
                 }
                 case 'updateCalendarEvent': {
                     let found = false;
-                    const { query, date, newTitle, newDate, newTime, newDescription } = fc.args;
+                    const { query, date, newTitle, newDate, newTime, newDescription } = args;
                     setCalendarEvents(prev => prev.map(event => {
                         if (event.title.toLowerCase() === query.toLowerCase() && event.date === date) {
                             found = true;
@@ -1780,7 +1784,7 @@ ${formattedHistory}
                 }
                 case 'deleteCalendarEvent': {
                     const initialLength = calendarEvents.length;
-                    const { query, date } = fc.args;
+                    const { query, date } = args;
                     setCalendarEvents(prev => prev.filter(e => !(e.title.toLowerCase() === query.toLowerCase() && e.date === date)));
                     resultText = calendarEvents.length < initialLength ? `Событие "${query}" на ${date} удалено.` : `Событие "${query}" на ${date} не найдено.`;
                     break;
@@ -1790,7 +1794,7 @@ ${formattedHistory}
                     resultText = "Все события календаря удалены.";
                     break;
                 case 'addTransaction': {
-                    const { type, amount, description, paymentMethod, date } = fc.args;
+                    const { type, amount, description, paymentMethod, date } = args;
                     if ((type === 'income' || type === 'expense') && typeof amount === 'number' && typeof description === 'string' && (paymentMethod === 'cash' || paymentMethod === 'creditCard')) {
                         
                         const isValidDate = (dateString: string) => {
@@ -1828,7 +1832,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'searchTransactions': {
-                    const { query } = fc.args;
+                    const { query } = args;
                     if (typeof query !== 'string' || query.trim() === '') {
                         resultText = 'Не удалось выполнить поиск: не указан поисковый запрос.';
                         break;
@@ -1892,7 +1896,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'editTransaction': {
-                    const { query, newAmount, newDescription, newPaymentMethod } = fc.args;
+                    const { query, newAmount, newDescription, newPaymentMethod } = args;
                     const transactionToEdit = findTransaction(query);
 
                     if (!transactionToEdit) {
@@ -1936,7 +1940,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'deleteTransaction': {
-                    const { query } = fc.args;
+                    const { query } = args;
                     const transactionToDelete = findTransaction(query);
                     if (!transactionToDelete) {
                         resultText = `Не удалось найти транзакцию для удаления по запросу "${query}". Попробуйте быть точнее.`;
@@ -1956,7 +1960,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'replaceTransaction': {
-                    const { query, newTransactions } = fc.args;
+                    const { query, newTransactions } = args;
                     if (!query || !Array.isArray(newTransactions) || newTransactions.length === 0) {
                         resultText = "Не удалось заменить транзакцию: неверные параметры.";
                         break;
@@ -1992,7 +1996,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'generateStatement': {
-                    const { filter } = fc.args;
+                    const { filter } = args;
                     let transactionsToExport = financeData.transactions;
 
                     if (filter && typeof filter === 'string') {
@@ -2085,7 +2089,7 @@ ${formattedHistory}
                     break;
                 }
                 case 'addPlannerEntry': {
-                    const { text } = fc.args;
+                    const { text } = args;
                     if (typeof text === 'string' && text.trim()) {
                         const newItem: PlannerItem = {
                             id: Date.now(),
@@ -2219,27 +2223,27 @@ ${formattedHistory}
                     }
                     break;
                 case 'readDictaphoneTranscript': {
-                    const file = storedFiles.find(f => f.name === fc.args.filename);
+                    const file = storedFiles.find(f => f.name === args.filename);
                     if (file?.transcript) {
                         resultText = `Транскрипция записи: ${file.transcript}`;
                     } else {
-                        resultText = `Не удалось найти транскрипцию для файла "${fc.args.filename}".`;
+                        resultText = `Не удалось найти транскрипцию для файла "${args.filename}".`;
                     }
                     break;
                 }
                  case 'getDictaphoneTranscriptContent': {
-                    const file = storedFiles.find(f => f.name === fc.args.filename);
+                    const file = storedFiles.find(f => f.name === args.filename);
                     if (file?.transcript) {
                         resultText = `[CONTEXT] The content of the requested recording is: "${file.transcript}"`;
                     } else {
-                        resultText = `[CONTEXT] I could not find a recording with the filename "${fc.args.filename}".`;
+                        resultText = `[CONTEXT] I could not find a recording with the filename "${args.filename}".`;
                     }
                     break;
                 }
                 case 'playDictaphoneRecording':
                     setActiveView('dictaphone');
                     if (isChatCollapsed) onExpandChat();
-                    await dictaphoneRef.current?.playRecordingByFileName(fc.args.filename);
+                    await dictaphoneRef.current?.playRecordingByFileName(args.filename);
                     resultText = 'Воспроизвожу запись.';
                     break;
                 case 'pauseDictaphonePlayback':
@@ -2251,7 +2255,7 @@ ${formattedHistory}
                     resultText = 'Воспроизведение остановлено.';
                     break;
                 case 'setPlaybackSpeed':
-                    const speed = fc.args.speed;
+                    const speed = args.speed;
                     if (typeof speed === 'number') {
                         dictaphoneRef.current?.setPlaybackSpeed(speed);
                         resultText = `Скорость воспроизведения установлена на ${speed}x.`;
@@ -2260,7 +2264,7 @@ ${formattedHistory}
                     }
                     break;
                 case 'searchDictaphoneRecordings':
-                    const query = fc.args.query;
+                    const query = args.query;
                     if (typeof query === 'string') {
                         setActiveView('dictaphone');
                         if (isChatCollapsed) onExpandChat();
@@ -2271,7 +2275,7 @@ ${formattedHistory}
                     }
                     break;
                 case 'getInformationFromUrl':
-                    const url = fc.args.url;
+                    const url = args.url;
                     if (typeof url === 'string' && url) {
                         const response = await sendTextMessage(`Please provide a concise summary of the content at: ${url}`, transcriptHistory);
                         resultText = response.text || "I was unable to retrieve information from that URL.";
@@ -2280,7 +2284,7 @@ ${formattedHistory}
                     }
                     break;
                 case 'navigateToLink':
-                    const navUrl = fc.args.url;
+                    const navUrl = args.url;
                     if (typeof navUrl === 'string' && navUrl) {
                         if (navUrl.startsWith('http://') || navUrl.startsWith('https://')) {
                             new URL(navUrl); // Validate URL

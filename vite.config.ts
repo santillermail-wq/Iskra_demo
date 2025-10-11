@@ -15,10 +15,11 @@ export default defineConfig(({ mode }) => {
     },
     plugins: [react()],
     // Этот блок `define` делает API_KEY доступным на стороне клиента
-    // как `process.env.API_KEY`. Это правильный способ для Vite
-    // передавать переменные окружения в код без использования префикса `VITE_`.
+    // как `process.env.API_KEY`. Добавление `|| ''` гарантирует, что
+    // даже если переменная окружения отсутствует, в код будет вставлена
+    // пустая строка, что предотвратит ошибку сборки.
     define: {
-      'process.env.API_KEY': JSON.stringify(env.API_KEY),
+      'process.env.API_KEY': JSON.stringify(env.API_KEY || ''),
     },
     resolve: {
       alias: {
