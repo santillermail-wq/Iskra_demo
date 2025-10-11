@@ -18,6 +18,22 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       'process.env.API_KEY': JSON.stringify(env.API_KEY)
-    }
+    },
+    build: {
+      // Увеличиваем лимит для предупреждения о размере чанка до 1500 kB.
+      // Это убирает предупреждение от Vercel, не затрагивая логику приложения.
+      chunkSizeWarningLimit: 1500,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            // Все библиотеки из node_modules будут сгруппированы в один чанк 'vendor'.
+            // Это помогает уменьшить размер основного чанка приложения.
+            if (id.includes('node_modules')) {
+              return 'vendor';
+            }
+          },
+        },
+      },
+    },
   }
 });
