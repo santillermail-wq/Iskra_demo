@@ -70,11 +70,9 @@ import {
 let ai: GoogleGenAI | null = null;
 export const getAi = (): GoogleGenAI => {
     if (!ai) {
-        const apiKey = process.env.API_KEY;
-        if (!apiKey || apiKey.trim() === '') {
-            throw new Error("API_KEY environment variable is not set or is empty.");
-        }
-        ai = new GoogleGenAI({ apiKey });
+        // FIX: Adhering to @google/genai guidelines to use process.env.API_KEY directly.
+        // App.tsx handles the user-facing error message if the key is missing.
+        ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     }
     return ai;
 };

@@ -11,11 +11,11 @@ const App: React.FC = () => {
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
 
   useEffect(() => {
-    // API Key Check
+    // FIX: Adhering to @google/genai guidelines to use process.env.API_KEY.
     const apiKey = process.env.API_KEY;
     if (!apiKey || apiKey.trim() === '' || apiKey === 'undefined') {
       setApiKeyError(
-        "Ключ Gemini API не найден. Пожалуйста, убедитесь, что переменная окружения GEMINI_API_KEY установлена правильно в вашей среде развертывания (например, в настройках Vercel)."
+        "Ключ Gemini API не найден. Пожалуйста, убедитесь, что переменная окружения API_KEY установлена правильно в вашей среде развертывания (например, в настройках Vercel)."
       );
       setIsApiKeyReady(false);
     } else {
