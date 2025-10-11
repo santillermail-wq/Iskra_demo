@@ -645,9 +645,21 @@ ${formattedHistory}
         let nextStartTime = 0;
 
         const WebkitAudioContext = (window as any).webkitAudioContext;
-        inputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 16000 });
+        
+        // Ensure input audio context is ready and resumed
+        if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
+            inputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 16000 });
+        }
+        if (inputAudioContextRef.current.state === 'suspended') {
+            await inputAudioContextRef.current.resume();
+        }
+
+        // Ensure output audio context is ready and resumed
         if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-          outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
+            outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
+        }
+        if (outputAudioContextRef.current.state === 'suspended') {
+            await outputAudioContextRef.current.resume();
         }
 
         const outputNode = outputAudioContextRef.current.createGain();
@@ -2330,9 +2342,6 @@ ${formattedHistory}
         await playDisconnectSound();
         await disconnect();
      } else if (!isDictaphoneRecording) {
-        if(outputAudioContextRef.current?.state === 'suspended') {
-            await outputAudioContextRef.current.resume();
-        }
         retryAttemptRef.current = 0;
         retryCycleRef.current = 1;
         if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
