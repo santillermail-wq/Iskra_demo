@@ -658,9 +658,10 @@ ${formattedHistory}
             config: {
                 responseModalities: [Modality.AUDIO],
                 speechConfig: {
-                    voiceConfig: { 
-                        prebuiltVoiceConfig: { voiceName: 'Zephyr' },
-                        ...voiceSettings
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { 
+                            voiceName: 'Zephyr'
+                        },
                     },
                 },
                 inputAudioTranscription: {},
@@ -983,7 +984,7 @@ ${formattedHistory}
             }
         }
     }
-  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, voiceSettings]);
+  }, [disconnect, isConnected, isConnecting, setTranscriptHistory]);
 
   const playConnectionSound = useCallback(async () => {
     if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
@@ -1023,21 +1024,25 @@ ${formattedHistory}
         await audioCtx.resume();
     }
 
+    // This creates a softer, quicker "powering off" sound effect.
+    // It uses a triangle wave for a gentler tone and has a quick descending frequency sweep.
     const osc = audioCtx.createOscillator();
     const gainNode = audioCtx.createGain();
     osc.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     
-    osc.type = 'sine';
-    // Descending notes (e.g., G4 -> E4)
-    osc.frequency.setValueAtTime(392.00, audioCtx.currentTime); 
-    osc.frequency.linearRampToValueAtTime(329.63, audioCtx.currentTime + 0.2);
+    const now = audioCtx.currentTime;
+    osc.type = 'triangle'; // Softer than a sine wave
     
-    gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4);
+    // Quick descending sound
+    osc.frequency.setValueAtTime(440, now); // A4
+    osc.frequency.exponentialRampToValueAtTime(220, now + 0.2); // A3
+    
+    gainNode.gain.setValueAtTime(0.3, now); // Start at a moderate volume
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.3); // Fade out quickly
 
-    osc.start(audioCtx.currentTime);
-    osc.stop(audioCtx.currentTime + 0.4);
+    osc.start(now);
+    osc.stop(now + 0.35);
   }, []);
 
     const findTransaction = useCallback((query: string): Transaction | null => {
@@ -1149,8 +1154,9 @@ ${formattedHistory}
                         responseModalities: [Modality.AUDIO],
                         speechConfig: {
                             voiceConfig: { 
-                                prebuiltVoiceConfig: { voiceName: 'Zephyr' },
-                                ...voiceSettings
+                                prebuiltVoiceConfig: { 
+                                    voiceName: 'Zephyr'
+                                },
                             },
                         },
                         systemInstruction: `You are a text-to-speech engine. Your only task is to say the following text exactly as it is written, without any additions or conversational filler. After you have said the text, do not say anything else. The text is: "${text}"`,
@@ -1205,7 +1211,7 @@ ${formattedHistory}
         });
         // FIX: `apiCallWithRetry` is a standalone function, not a method on `sendTextMessage`.
         return apiCallWithRetry(speechTask, 3, 1000);
-    }, [voiceSettings]);
+    }, []);
 
   const playAudio = useCallback(async (audioBytes: Uint8Array) => {
     if (audioBytes.length === 0) return;
