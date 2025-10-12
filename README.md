@@ -20,7 +20,7 @@ View your app in AI Studio: https://ai.studio/apps/drive/1jlOll-88ZH8losxDCE4ikJ
     -   Create a file named `.env.local` in the root of your project.
     -   Add your Gemini API key to this file. The variable **must** be named `GEMINI_API_KEY`.
         ```
-        GEMINI_API_KEY=YOUR_API_KEY_HERE
+        GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
         ```
 3.  **Run the app:**
     ```bash
