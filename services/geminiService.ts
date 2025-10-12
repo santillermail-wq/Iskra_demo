@@ -66,11 +66,11 @@ import {
 } from '../types';
 
 
-// Lazily initialize the AI instance to ensure API_KEY is present before use.
+// Lazily initialize the AI instance to ensure GEMINI_API_KEY is present before use.
 let ai: GoogleGenAI | null = null;
 export const getAi = (): GoogleGenAI => {
     if (!ai) {
-        ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
     }
     return ai;
 };

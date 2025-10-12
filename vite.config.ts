@@ -5,13 +5,15 @@ import react from '@vitejs/plugin-react';
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   // Загружаем переменные окружения для текущего режима (development, production)
-  // Третий параметр '' загружает все переменные, а не только с префиксом VITE_
-  const env = loadEnv(mode, process.cwd(), '');
+  // Третий параметр '' загружает все переменные, а не только с префиком GEMINI_
+  // FIX: Cast `process` to `any` to bypass TypeScript error when `process.cwd` is not found on the type definition.
+  // This is safe because vite.config.ts runs in a Node.js environment where `process.cwd` is always available.
+  const env = loadEnv(mode, (process as any).cwd(), '');
 
   return {
     define: {
-      // Делаем переменную API_KEY доступной в клиентском коде как process.env.API_KEY
-      'process.env.API_KEY': JSON.stringify(env.API_KEY)
+      // Делаем переменную GEMINI_API_KEY доступной в клиентском коде как process.env.GEMINI_API_KEY
+      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
     },
     server: {
       port: 3000,
