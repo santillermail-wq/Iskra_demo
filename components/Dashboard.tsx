@@ -349,6 +349,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   const userScrolledUpRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const currentChatLogIdRef = useRef<number | null>(null);
+  const awaitingConfirmationRef = useRef<{ type: 'planner' | 'calendar', id: number } | null>(null);
+  const taskRemindersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   
   const loadInstructions = useCallback(async () => {
     if (isDbReady) {
@@ -608,6 +610,241 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     }
   }, [playDisconnectSound]);
 
+  const synthesizeSpeech = useCallback(async (text: string): Promise<Uint8Array> => {
+        const speechTask = () => new Promise<Uint8Array>((resolve, reject) => {
+            const audioChunks: Uint8Array[] = [];
+            try {
+                const sessionPromise = getAi().live.connect({
+                    model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+                    config: {
+                        responseModalities: [Modality.AUDIO],
+                        speechConfig: {
+                            voiceConfig: { 
+                                prebuiltVoiceConfig: { 
+                                    voiceName: 'Zephyr'
+                                },
+                            },
+                        },
+                        systemInstruction: `You are a text-to-speech engine. Your only task is to say the following text exactly as it is written, without any additions or conversational filler. After you have said the text, do not say anything else. The text is: "${text}"`,
+                    },
+                    callbacks: {
+                        onopen: async () => {
+                            try {
+                                const session = await sessionPromise;
+                                const silentFrame = new Uint8Array(320); // 10ms of 16-bit PCM silence
+                                const pcmBlob = {
+                                    data: encode(silentFrame),
+                                    mimeType: 'audio/pcm;rate=16000',
+                                };
+                                session.sendRealtimeInput({ media: pcmBlob });
+                            } catch (e) {
+                                console.error("Error triggering TTS response", e);
+                                reject(new Error('Failed to initiate speech synthesis.'));
+                            }
+                        },
+                        onmessage: (message: LiveServerMessage) => {
+                            if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
+                                const base64Audio = message.serverContent.modelTurn.parts[0].inlineData.data;
+                                audioChunks.push(decode(base64Audio));
+                            }
+                            if (message.serverContent?.turnComplete) {
+                                sessionPromise.then(s => s.close()).catch(console.error);
+                            }
+                        },
+                        onerror: (e: any) => {
+                            console.error('TTS Session error:', e);
+                            reject(e);
+                        },
+                        onclose: () => {
+                            if (audioChunks.length === 0) {
+                                console.warn("Speech synthesis resulted in no audio data.");
+                            }
+                            const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+                            const combined = new Uint8Array(totalLength);
+                            let offset = 0;
+                            for (const chunk of audioChunks) {
+                                combined.set(chunk, offset);
+                                offset += chunk.length;
+                            }
+                            resolve(combined);
+                        },
+                    }
+                });
+                sessionPromise.catch(reject);
+            } catch(e) {
+                reject(e);
+            }
+        });
+        return apiCallWithRetry(speechTask, 3, 1000);
+    }, []);
+
+  const playAudio = useCallback(async (audioBytes: Uint8Array) => {
+    if (audioBytes.length === 0) return;
+
+    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+        const WebkitAudioContext = (window as any).webkitAudioContext;
+        try {
+            outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
+        } catch (e) {
+            console.error("Could not create audio context for reminder.", e);
+            return;
+        }
+    }
+
+    if (outputAudioContextRef.current.state === 'suspended') {
+        try {
+            await outputAudioContextRef.current.resume();
+        } catch (e) {
+            console.error("Could not resume audio context for reminder.", e);
+            return;
+        }
+    }
+
+
+    try {
+        const audioBuffer = await decodeAudioData(audioBytes, outputAudioContextRef.current, 24000, 1);
+        const source = outputAudioContextRef.current.createBufferSource();
+        source.buffer = audioBuffer;
+        
+        const outputNode = outputAudioContextRef.current.createGain();
+        outputNode.connect(outputAudioContextRef.current.destination);
+        source.connect(outputNode);
+
+        return new Promise<void>(resolve => {
+            source.start();
+            setIsSpeaking(true);
+            source.onended = () => {
+                setIsSpeaking(false);
+                resolve();
+            };
+        });
+    } catch(e) {
+        console.error("Error playing synthesized audio:", e);
+    }
+  }, []);
+
+  const playTaskReminderSound = useCallback((): Promise<void> => {
+    return new Promise(async (resolve, reject) => {
+        if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+            const WebkitAudioContext = (window as any).webkitAudioContext;
+            try {
+                outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
+            } catch (e) {
+                console.error("Could not create audio context for reminder.", e);
+                return reject(e);
+            }
+        }
+
+        const audioCtx = outputAudioContextRef.current;
+        if (audioCtx.state === 'suspended') {
+            try {
+                await audioCtx.resume();
+            } catch (e) {
+                console.error("Could not resume audio context for reminder.", e);
+                return reject(e);
+            }
+        }
+
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        osc.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        const now = audioCtx.currentTime;
+        const duration = 0.6;
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now); // A5
+        gainNode.gain.setValueAtTime(0.4, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+
+        const osc2 = audioCtx.createOscillator();
+        osc2.connect(gainNode);
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(1046.5, now + 0.1); // C6
+        
+        osc.onended = () => resolve();
+
+        osc.start(now);
+        osc.stop(now + duration);
+        osc2.start(now + 0.1);
+        osc2.stop(now + duration);
+    });
+  }, []);
+
+  const clearTaskReminder = useCallback((id: number, type: 'planner' | 'calendar') => {
+    const key = `${type}-${id}`;
+    if (taskRemindersRef.current.has(key)) {
+        clearTimeout(taskRemindersRef.current.get(key)!);
+        taskRemindersRef.current.delete(key);
+    }
+  }, []);
+
+  const setTaskReminder = useCallback((item: PlannerItem | CalendarEventItem, type: 'planner' | 'calendar') => {
+    const itemDate = item.date;
+    const itemTime = 'time' in item ? item.time : undefined;
+    const itemId = item.id;
+    const itemText = 'text' in item ? item.text : item.title;
+
+    clearTaskReminder(itemId, type);
+
+    if (item.completed || !itemTime) {
+        return;
+    }
+
+    const reminderDateTime = new Date(`${itemDate}T${itemTime}`);
+    const now = new Date();
+
+    if (reminderDateTime <= now) {
+        return; // Don't set reminders for past events
+    }
+    
+    const delay = reminderDateTime.getTime() - now.getTime();
+
+    const timeoutId = setTimeout(async () => {
+        try {
+            await playTaskReminderSound();
+            const reminderMessage = `Напоминаю, у вас была запланирована задача: "${itemText}" на ${itemTime}. Вы ее выполнили?`;
+
+            setTranscriptHistory(prev => [...prev, {
+                id: `reminder-${itemId}-${Date.now()}`,
+                author: 'assistant',
+                text: reminderMessage,
+                type: 'message',
+                timestamp: Date.now()
+            }]);
+
+            const audioBytes = await synthesizeSpeech(reminderMessage);
+            await playAudio(audioBytes);
+
+            awaitingConfirmationRef.current = { type, id: itemId };
+        } catch (error) {
+            console.error("Failed to execute task reminder:", error);
+        } finally {
+            taskRemindersRef.current.delete(`${type}-${itemId}`);
+        }
+    }, delay);
+    
+    taskRemindersRef.current.set(`${type}-${itemId}`, timeoutId);
+
+  }, [clearTaskReminder, playTaskReminderSound, synthesizeSpeech, playAudio]);
+
+  useEffect(() => {
+    if (isDbReady) {
+        // Clear all existing reminders before rescheduling to prevent duplicates
+        taskRemindersRef.current.forEach(timeoutId => clearTimeout(timeoutId));
+        taskRemindersRef.current.clear();
+
+        plannerContent.forEach(item => setTaskReminder(item, 'planner'));
+        calendarEvents.forEach(event => setTaskReminder(event, 'calendar'));
+    }
+
+    // Cleanup timers on component unmount
+    return () => {
+        taskRemindersRef.current.forEach(timeoutId => clearTimeout(timeoutId));
+        taskRemindersRef.current.clear();
+    };
+  }, [isDbReady, plannerContent, calendarEvents, setTaskReminder]);
+
   const connect = useCallback(async () => {
     const scheduleRetry = (errorReason: string) => {
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
@@ -661,9 +898,25 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     // Already connecting or connected, do nothing.
     if (isConnecting || isConnected) return;
 
-    if (!inputAudioContextRef.current || !outputAudioContextRef.current) {
-        setStatus('Аудио не готово. Нажмите на микрофон еще раз.');
-        console.error('Audio contexts not initialized before connect call.');
+    // Centralize AudioContext creation and resume here to handle both initial connections and retries.
+    // This is safe because the first call to connect() is always initiated by a user gesture (handleMicClick).
+    try {
+        const WebkitAudioContext = (window as any).webkitAudioContext;
+        if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
+            inputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 16000 });
+        }
+        await inputAudioContextRef.current.resume();
+
+        if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+            outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
+        }
+        await outputAudioContextRef.current.resume();
+    } catch (e) {
+        console.error("Failed to initialize and resume AudioContexts:", e);
+        setStatus("Ошибка аудио. Проверьте разрешения.");
+        // Prevent retries if audio context fails. This is a fatal error for this session.
+        isIntentionalDisconnectRef.current = true; 
+        await disconnect(true); // Silently clean up
         return;
     }
 
@@ -983,6 +1236,30 @@ ${formattedHistory}
                     }
 
                     if (message.serverContent?.turnComplete) {
+                        if (awaitingConfirmationRef.current) {
+                            const confirmationContext = { ...awaitingConfirmationRef.current };
+                            awaitingConfirmationRef.current = null; // Consume it immediately
+
+                            const userText = currentUserTranscriptionRef.current.toLowerCase();
+                            const affirmative = ['да', 'ага', 'угу', 'конечно', 'сделал', 'сделала', 'выполнил', 'выполнила', 'позвонил', 'позвонила', 'уже'].some(word => userText.includes(word));
+                            const negative = ['нет', 'не', 'еще нет', 'пока нет', 'забыл', 'забыла'].some(word => userText.includes(word));
+
+                            if (affirmative && !negative) {
+                                if (confirmationContext.type === 'planner') {
+                                    setPlannerContent(prev => prev.map(item => item.id === confirmationContext.id ? { ...item, completed: true } : item));
+                                } else if (confirmationContext.type === 'calendar') {
+                                    setCalendarEvents(prev => prev.map(item => item.id === confirmationContext.id ? { ...item, completed: true } : item));
+                                }
+                                const confirmationMessage = "Отлично! Я отметил задачу как выполненную.";
+                                setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: confirmationMessage, type: 'message', timestamp: Date.now() }]);
+                                synthesizeSpeech(confirmationMessage).then(playAudio);
+                            } else {
+                                const followupMessage = "Хорошо, я оставлю задачу активной.";
+                                setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: followupMessage, type: 'message', timestamp: Date.now() }]);
+                                synthesizeSpeech(followupMessage).then(playAudio);
+                            }
+                        }
+
                        currentUserTranscriptionRef.current = '';
                        currentAssistantTranscriptionRef.current = '';
 
@@ -1090,7 +1367,7 @@ ${formattedHistory}
             }
         }
     }
-  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, playConnectionLossSound]);
+  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, playConnectionLossSound, synthesizeSpeech, playAudio, setPlannerContent, setCalendarEvents]);
 
   const playConnectionSound = useCallback(async () => {
     if (!outputAudioContextRef.current) return;
@@ -1213,102 +1490,6 @@ ${formattedHistory}
         }
         return { totalBalance, creditCardBalance, cashBalance };
     }, []);
-
-    const synthesizeSpeech = useCallback(async (text: string): Promise<Uint8Array> => {
-        const speechTask = () => new Promise<Uint8Array>((resolve, reject) => {
-            const audioChunks: Uint8Array[] = [];
-            try {
-                const sessionPromise = getAi().live.connect({
-                    model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-                    config: {
-                        responseModalities: [Modality.AUDIO],
-                        speechConfig: {
-                            voiceConfig: { 
-                                prebuiltVoiceConfig: { 
-                                    voiceName: 'Zephyr'
-                                },
-                            },
-                        },
-                        systemInstruction: `You are a text-to-speech engine. Your only task is to say the following text exactly as it is written, without any additions or conversational filler. After you have said the text, do not say anything else. The text is: "${text}"`,
-                    },
-                    callbacks: {
-                        onopen: async () => {
-                            try {
-                                const session = await sessionPromise;
-                                const silentFrame = new Uint8Array(320); // 10ms of 16-bit PCM silence
-                                const pcmBlob = {
-                                    data: encode(silentFrame),
-                                    mimeType: 'audio/pcm;rate=16000',
-                                };
-                                session.sendRealtimeInput({ media: pcmBlob });
-                            } catch (e) {
-                                console.error("Error triggering TTS response", e);
-                                reject(new Error('Failed to initiate speech synthesis.'));
-                            }
-                        },
-                        onmessage: (message: LiveServerMessage) => {
-                            if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
-                                const base64Audio = message.serverContent.modelTurn.parts[0].inlineData.data;
-                                audioChunks.push(decode(base64Audio));
-                            }
-                            if (message.serverContent?.turnComplete) {
-                                sessionPromise.then(s => s.close()).catch(console.error);
-                            }
-                        },
-                        onerror: (e: any) => {
-                            console.error('TTS Session error:', e);
-                            reject(e);
-                        },
-                        onclose: () => {
-                            if (audioChunks.length === 0) {
-                                console.warn("Speech synthesis resulted in no audio data.");
-                            }
-                            const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
-                            const combined = new Uint8Array(totalLength);
-                            let offset = 0;
-                            for (const chunk of audioChunks) {
-                                combined.set(chunk, offset);
-                                offset += chunk.length;
-                            }
-                            resolve(combined);
-                        },
-                    }
-                });
-                sessionPromise.catch(reject);
-            } catch(e) {
-                reject(e);
-            }
-        });
-        return apiCallWithRetry(speechTask, 3, 1000);
-    }, []);
-
-  const playAudio = useCallback(async (audioBytes: Uint8Array) => {
-    if (audioBytes.length === 0 || !outputAudioContextRef.current) return;
-    if (outputAudioContextRef.current.state === 'suspended') {
-        await outputAudioContextRef.current.resume();
-    }
-
-    try {
-        const audioBuffer = await decodeAudioData(audioBytes, outputAudioContextRef.current, 24000, 1);
-        const source = outputAudioContextRef.current.createBufferSource();
-        source.buffer = audioBuffer;
-        
-        const outputNode = outputAudioContextRef.current.createGain();
-        outputNode.connect(outputAudioContextRef.current.destination);
-        source.connect(outputNode);
-
-        return new Promise<void>(resolve => {
-            source.start();
-            setIsSpeaking(true);
-            source.onended = () => {
-                setIsSpeaking(false);
-                resolve();
-            };
-        });
-    } catch(e) {
-        console.error("Error playing synthesized audio:", e);
-    }
-  }, []);
 
     const handleRemoveFile = useCallback(() => {
         setAttachedFile(null);
@@ -1812,10 +1993,16 @@ ${formattedHistory}
                     resultText = "Все контакты удалены.";
                     break;
 
-                case 'addCalendarEvent':
-                    setCalendarEvents(prev => [{ id: Date.now(), ...args }, ...prev].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
+                case 'addCalendarEvent': {
+                    const newEvent: CalendarEventItem = { id: Date.now(), completed: false, ...args };
+                    setCalendarEvents(prev => [...prev, newEvent].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
+                    setTaskReminder(newEvent, 'calendar');
                     resultText = `Событие "${args.title}" добавлено в календарь на ${args.date}.`;
+                    if (args.time) {
+                        resultText += ` в ${args.time}. Я напомню вам.`;
+                    }
                     break;
+                }
                 case 'getCalendarEvents': {
                     const query = args.dateQuery?.toLowerCase();
                     let targetDate = new Date();
@@ -2155,16 +2342,21 @@ ${formattedHistory}
                     break;
                 }
                 case 'addPlannerEntry': {
-                    const { text } = args;
+                    const { text, time } = args;
                     if (typeof text === 'string' && text.trim()) {
                         const newItem: PlannerItem = {
                             id: Date.now(),
                             text: text.trim(),
                             date: new Date().toISOString().slice(0, 10),
+                            time: time,
                             completed: false,
                         };
                         setPlannerContent(prev => [newItem, ...prev].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.id - a.id));
+                        setTaskReminder(newItem, 'planner');
                         resultText = `Задача добавлена в планировщик: "${text}"`;
+                         if (time) {
+                            resultText += ` на ${time}. Я напомню вам.`;
+                        }
                     } else {
                         resultText = "Не удалось добавить запись: неверные параметры.";
                     }
@@ -2383,7 +2575,7 @@ ${formattedHistory}
             resultText = `Error executing function ${fc.name}.`;
         }
         return resultText;
-    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudio]);
+    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudio, setTaskReminder]);
 
     useEffect(() => {
         executeFunctionCallRef.current = executeFunctionCall;
@@ -2394,27 +2586,13 @@ ${formattedHistory}
         isIntentionalDisconnectRef.current = true;
         await disconnect();
      } else if (!isDictaphoneRecording) {
-        // Centralized AudioContext creation and resume on user gesture
-        try {
-            const WebkitAudioContext = (window as any).webkitAudioContext;
-            if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
-                inputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 16000 });
-            }
-            await inputAudioContextRef.current.resume();
-
-            if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-                outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-            }
-            await outputAudioContextRef.current.resume();
-        } catch (e) {
-            console.error("Failed to initialize and resume AudioContexts:", e);
-            setStatus("Ошибка аудио. Проверьте разрешения.");
-            return;
-        }
-
+        // Reset retry logic for a manual connection attempt.
         retryAttemptRef.current = 0;
         retryCycleRef.current = 1;
         if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+        
+        // connect() now handles AudioContext creation and resume.
+        // This is valid because handleMicClick is triggered by a user gesture.
         connect();
      }
   };

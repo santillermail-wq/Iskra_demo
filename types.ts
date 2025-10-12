@@ -66,6 +66,7 @@ export interface PlannerItem {
     id: number;
     text: string;
     date: string; // YYYY-MM-DD
+    time?: string; // HH:MM
     completed: boolean;
 }
 
@@ -89,6 +90,7 @@ export interface CalendarEventItem {
     date: string; // YYYY-MM-DD
     time?: string; // HH:MM
     description?: string;
+    completed?: boolean;
 }
 
 export interface UserInstruction {
@@ -726,6 +728,10 @@ export const addPlannerEntryFunctionDeclaration: FunctionDeclaration = {
         type: Type.STRING,
         description: 'The text content of the task to add to the organizer.',
       },
+      time: {
+        type: Type.STRING,
+        description: 'Optional. The time for the task in HH:MM format. If a time is mentioned in the task text, it MUST be extracted and provided here.'
+      }
     },
     required: ['text'],
   },

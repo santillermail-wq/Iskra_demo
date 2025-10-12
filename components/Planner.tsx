@@ -1,10 +1,61 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { PlannerItem } from '../types';
 
 interface PlannerProps {
     content: PlannerItem[];
     setContent: (value: React.SetStateAction<PlannerItem[]>) => void;
 }
+
+const formatTimer = (totalSeconds: number): string => {
+    if (totalSeconds < 0) return '00:00:00';
+    const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
+    const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+    const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+    return `${hours}:${minutes}:${seconds}`;
+};
+
+const TaskTimer: React.FC<{ item: PlannerItem }> = ({ item }) => {
+    const calculateRemaining = () => {
+        if (!item.time || item.completed) {
+            return null;
+        }
+        
+        const targetDateTime = new Date(`${item.date}T${item.time}`);
+        const now = new Date();
+
+        // Only create timers for tasks scheduled for the current calendar day.
+        if (targetDateTime.toDateString() !== now.toDateString()) {
+            return null;
+        }
+        
+        const diff = Math.round((targetDateTime.getTime() - now.getTime()) / 1000);
+        return diff > 0 ? diff : 0;
+    };
+
+    const [remainingSeconds, setRemainingSeconds] = useState(calculateRemaining());
+
+    useEffect(() => {
+        // No need to run an interval if there's no time to count down to.
+        if (remainingSeconds === null) return;
+
+        const timerId = setInterval(() => {
+            setRemainingSeconds(calculateRemaining());
+        }, 1000);
+
+        return () => clearInterval(timerId);
+    }, [item]); // Rerun effect if the item itself changes.
+
+    if (remainingSeconds === null || remainingSeconds <= 0) {
+        return null;
+    }
+
+    return (
+        <div className="font-mono text-sm text-cyan-400 bg-black/20 px-2 py-1 rounded-md">
+            {formatTimer(remainingSeconds)}
+        </div>
+    );
+};
+
 
 const Planner: React.FC<PlannerProps> = ({ content, setContent }) => {
     const [newTaskText, setNewTaskText] = useState('');
@@ -98,6 +149,7 @@ const Planner: React.FC<PlannerProps> = ({ content, setContent }) => {
                                         <label id={`task-label-${item.id}`} className={`flex-1 text-gray-200 transition-colors ${item.completed ? 'line-through text-gray-500' : ''}`}>
                                             {item.text}
                                         </label>
+                                        <TaskTimer item={item} />
                                         <button
                                             onClick={() => handleDelete(item.id)}
                                             className="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"

@@ -1,3 +1,5 @@
+
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { PlannerItem, NoteItem, ContactItem, CalendarEventItem, UserInstruction } from '../types';
 import Planner from './Planner';
@@ -301,55 +303,98 @@ const ContactsTool: React.FC<{ contacts: ContactItem[]; setContacts: React.Dispa
 
 // --- Calendar Tool ---
 const CalendarTool: React.FC<{ events: CalendarEventItem[]; setEvents: React.Dispatch<React.SetStateAction<CalendarEventItem[]>> }> = ({ events, setEvents }) => {
-    const [newEvent, setNewEvent] = useState({ title: '', date: '', time: ''});
-    
+    const [newEvent, setNewEvent] = useState({ title: '', date: new Date().toISOString().slice(0, 10), time: '', completed: false });
+    const [currentDate, setCurrentDate] = useState(new Date());
+
     const handleAddEvent = () => {
         if (newEvent.title && newEvent.date) {
-            setEvents(prev => [...prev, { id: Date.now(), ...newEvent }].sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
-            setNewEvent({ title: '', date: '', time: '' });
+            setEvents(prev => [...prev, { id: Date.now(), ...newEvent }].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
+            setNewEvent({ title: '', date: new Date().toISOString().slice(0, 10), time: '', completed: false });
         }
     };
-    
+
     const handleDeleteEvent = (id: number) => {
         setEvents(prev => prev.filter(event => event.id !== id));
     };
 
-    const groupedEvents = useMemo(() => events.reduce((acc, event) => {
-            (acc[event.date] = acc[event.date] || []).push(event);
-            return acc;
-        }, {} as Record<string, CalendarEventItem[]>), [events]);
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+    const monthName = currentDate.toLocaleString('ru-RU', { month: 'long', year: 'numeric' });
+    const weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+    const getDayOfWeek = (date: Date) => {
+        let day = date.getDay();
+        return day === 0 ? 6 : day - 1; // Mon=0, Sun=6
+    };
+
+    const handlePrevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
+    const handleNextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
+    const handleToday = () => setCurrentDate(new Date());
 
     return (
         <div className="h-full p-4 sm:p-6 flex flex-col text-white">
             <div className="flex-shrink-0 mb-4 p-3 bg-white/5 rounded-lg grid grid-cols-1 sm:grid-cols-4 gap-2 items-center">
-                <input value={newEvent.title} onChange={e => setNewEvent(p => ({...p, title: e.target.value}))} placeholder="Название события" className="h-9 px-3 bg-black/30 border border-white/20 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500 col-span-1 sm:col-span-2"/>
-                <input type="date" value={newEvent.date} onChange={e => setNewEvent(p => ({...p, date: e.target.value}))} className="h-9 px-3 bg-black/30 border border-white/20 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500"/>
-                <input type="time" value={newEvent.time} onChange={e => setNewEvent(p => ({...p, time: e.target.value}))} className="h-9 px-3 bg-black/30 border border-white/20 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500"/>
+                <input value={newEvent.title} onChange={e => setNewEvent(p => ({ ...p, title: e.target.value }))} placeholder="Название события" className="h-9 px-3 bg-black/30 border border-white/20 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500 col-span-1 sm:col-span-2" />
+                <input type="date" value={newEvent.date} onChange={e => setNewEvent(p => ({ ...p, date: e.target.value }))} className="h-9 px-3 bg-black/30 border border-white/20 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500" />
+                <input type="time" value={newEvent.time} onChange={e => setNewEvent(p => ({ ...p, time: e.target.value }))} className="h-9 px-3 bg-black/30 border border-white/20 rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-500" />
                 <button onClick={handleAddEvent} className="h-9 bg-cyan-600 hover:bg-cyan-500 rounded-md col-span-1 sm:col-span-4">Добавить событие</button>
             </div>
-            <div className="overflow-y-auto flex-1 pr-2 space-y-4">
-                 {events.length === 0 ? <p className="text-gray-400 text-center pt-8">Событий нет.</p> :
-                    Object.keys(groupedEvents).map(date => (
-                        <div key={date}>
-                           <h3 className="font-semibold text-gray-300 mb-2">{new Date(date + 'T00:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</h3>
-                           <div className="space-y-2">
-                               {groupedEvents[date].map(event => (
-                                    <div key={event.id} className="bg-white/5 p-2 rounded-md group flex justify-between items-center">
-                                        <div>
-                                            <span className="text-gray-400 mr-2">{event.time}</span>
-                                            <span>{event.title}</span>
-                                        </div>
-                                        <button onClick={() => handleDeleteEvent(event.id)} className="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100">&times;</button>
-                                    </div>
-                               ))}
-                           </div>
+
+            <div className="flex-shrink-0 flex justify-between items-center mb-2 px-2">
+                <button onClick={handlePrevMonth} className="p-2 rounded-full hover:bg-white/10 transition-colors" aria-label="Предыдущий месяц">&lt;</button>
+                <h3 onClick={handleToday} className="text-lg font-semibold cursor-pointer capitalize transition-colors hover:text-cyan-300">{monthName}</h3>
+                <button onClick={handleNextMonth} className="p-2 rounded-full hover:bg-white/10 transition-colors" aria-label="Следующий месяц">&gt;</button>
+            </div>
+
+            <div className="flex-1 overflow-hidden border border-white/10 rounded-lg bg-black/20">
+                <div className="grid h-full" style={{
+                    gridTemplateColumns: 'minmax(40px, auto) repeat(31, minmax(0, 1fr))',
+                    gridTemplateRows: 'auto repeat(7, minmax(0, 1fr))',
+                }}>
+                    <div className="sticky top-0 left-0 bg-gray-800 z-30 border-b border-r border-white/10"></div>
+                    
+                    {Array.from({ length: 31 }, (_, i) => i + 1).map(dayNum => (
+                        <div key={`day-header-${dayNum}`} className="text-center font-bold p-1 text-xs sticky top-0 bg-gray-800 z-20 border-b border-r border-white/10">
+                            {dayNum}
                         </div>
-                    ))
-                }
+                    ))}
+
+                    {weekDays.map((weekDay, weekDayIndex) => (
+                        <React.Fragment key={`weekday-row-${weekDayIndex}`}>
+                            <div className="text-center font-bold p-1 text-xs sticky left-0 bg-gray-800 z-20 border-b border-r border-white/10 flex items-center justify-center">
+                                {weekDay}
+                            </div>
+                            {Array.from({ length: 31 }, (_, i) => i + 1).map(dayNum => {
+                                const cellDate = new Date(year, month, dayNum);
+                                const isValidDateInMonth = cellDate.getMonth() === month;
+                                const isCorrectDayOfWeek = isValidDateInMonth && getDayOfWeek(cellDate) === weekDayIndex;
+                                
+                                if (!isCorrectDayOfWeek) {
+                                    return <div key={`empty-${weekDayIndex}-${dayNum}`} className="border-b border-r border-white/10 bg-gray-900/50"></div>;
+                                }
+
+                                const dateString = cellDate.toISOString().slice(0, 10);
+                                const eventsForDay = events.filter(e => e.date === dateString);
+                                
+                                return (
+                                    <div key={`cell-${weekDayIndex}-${dayNum}`} className="border-b border-r border-white/10 p-1 text-xs overflow-y-auto space-y-1">
+                                        {eventsForDay.map(event => (
+                                            <div key={event.id} title={`${event.time || ''} ${event.title}`} className="bg-purple-800/70 p-1 rounded-sm text-white truncate group relative hover:bg-purple-700 transition-colors">
+                                                <span className="font-semibold">{event.time}</span> {event.title}
+                                                <button onClick={() => handleDeleteEvent(event.id)} className="absolute top-0 right-0 p-0.5 text-white hover:text-red-300 opacity-0 group-hover:opacity-100 bg-black/30 rounded-full transition">&times;</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                );
+                            })}
+                        </React.Fragment>
+                    ))}
+                </div>
             </div>
         </div>
     );
 };
+
 
 // --- MAIN ORGANIZER COMPONENT ---
 
@@ -401,7 +446,7 @@ const Organizer: React.FC<OrganizerProps> = (props) => {
     };
     
     const toolIcons = [
-        { name: 'instructions', title: 'Инструкции', path: "M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z" },
+        { name: 'instructions', title: 'Инструкции', path: "M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z" },
         { name: 'notes', title: 'Заметки', path: "M19,3H5C3.89,3 3,3.89 3,5V19C3,20.11 3.89,21 5,21H19C20.11,21 21,20.11 21,19V5C21,3.89 20.11,3 19,3M9,7H15V9H9V7M9,11H15V13H9V11M9,15H13V17H9V15Z" },
         { name: 'contacts', title: 'Контакты', path: "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" },
         { name: 'calendar', title: 'Календарь', path: "M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z" },
