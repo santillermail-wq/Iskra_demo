@@ -339,6 +339,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   const currentAssistantTranscriptionRef = useRef('');
   const executeFunctionCallRef = useRef<((fc: { name?: string, args?: any }) => Promise<string>) | null>(null);
   const isDictaphoneRecordingRef = useRef(isDictaphoneRecording);
+  const shouldDisconnectAfterTurnRef = useRef(false);
 
   // --- Refs for New Features ---
   const retryAttemptRef = useRef(0);
@@ -489,9 +490,91 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
       }
   }, [isChatCollapsed]);
 
+  const playDisconnectSound = useCallback(() => {
+    if (!outputAudioContextRef.current) {
+        return Promise.resolve();
+    }
+    const audioCtx = outputAudioContextRef.current;
+
+    return new Promise<void>(async (resolve) => {
+        if (audioCtx.state === 'suspended') {
+            await audioCtx.resume();
+        }
+
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        const duration = 0.35;
+        osc.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        const now = audioCtx.currentTime;
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.exponentialRampToValueAtTime(220, now + 0.2);
+        gainNode.gain.setValueAtTime(0.3, now);
+        gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
+
+        osc.onended = () => {
+            resolve();
+        };
+
+        osc.start(now);
+        osc.stop(now + duration);
+    });
+  }, []);
+  
+  const playConnectionLossSound = useCallback(async () => {
+    if (!outputAudioContextRef.current) return;
+    const audioCtx = outputAudioContextRef.current;
+    if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+    }
+
+    const duration = 0.2;
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    
+    const now = audioCtx.currentTime;
+    osc.type = 'sawtooth'; // Harsher sound for an error
+    
+    // A quick downward chirp with a glitch
+    osc.frequency.setValueAtTime(600, now);
+    osc.frequency.exponentialRampToValueAtTime(300, now + 0.1);
+    osc.frequency.setValueAtTime(800, now + 0.11); // Glitch up
+    osc.frequency.exponentialRampToValueAtTime(200, now + duration);
+    
+    gainNode.gain.setValueAtTime(0.25, now);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    osc.start(now);
+    osc.stop(now + duration);
+  }, []);
+
   const disconnect = useCallback(async (isSilent = false) => {
     if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
 
+    // --- Immediate User Feedback Section ---
+    // 1. Stop the microphone hardware track
+    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+    mediaStreamRef.current = null;
+    
+    // 2. Play the sound
+    if (!isSilent) {
+        await playDisconnectSound();
+    }
+
+    // 3. Update the UI state
+    setIsConnected(false);
+    setUserSpeaking(false);
+    if (!isSilent && !isDictaphoneRecordingRef.current) {
+        setStatus('Нажмите на микрофон или введите сообщение');
+    }
+    // --- End of Immediate Feedback ---
+
+
+    // --- Background Cleanup Section ---
     if (sessionPromiseRef.current) {
         try {
             const session = await sessionPromiseRef.current;
@@ -502,8 +585,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     }
     sessionPromiseRef.current = null;
 
-    mediaStreamRef.current?.getTracks().forEach(track => track.stop());
-    mediaStreamRef.current = null;
     scriptProcessorRef.current?.disconnect();
     analyserRef.current?.disconnect();
 
@@ -525,17 +606,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
     }
-
-    setIsConnected(false);
-    setUserSpeaking(false);
-    if (!isSilent && !isDictaphoneRecordingRef.current) {
-      setStatus('Нажмите на микрофон или введите сообщение');
-    }
-  }, []);
+  }, [playDisconnectSound]);
 
   const connect = useCallback(async () => {
     const scheduleRetry = (errorReason: string) => {
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+      
+      playConnectionLossSound();
   
       const userFriendlyError = mapErrorToUserMessage(errorReason);
   
@@ -909,6 +986,12 @@ ${formattedHistory}
                        currentUserTranscriptionRef.current = '';
                        currentAssistantTranscriptionRef.current = '';
 
+                       if (shouldDisconnectAfterTurnRef.current) {
+                           shouldDisconnectAfterTurnRef.current = false;
+                           // Use a small timeout to allow the final audio chunk to finish playing
+                           setTimeout(() => disconnect(), 200);
+                       }
+
                        const groundingChunks = message.serverContent?.groundingMetadata?.groundingChunks;
                        let sources: Source[] = [];
                        if (groundingChunks && groundingChunks.length > 0) {
@@ -1007,7 +1090,7 @@ ${formattedHistory}
             }
         }
     }
-  }, [disconnect, isConnected, isConnecting, setTranscriptHistory]);
+  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, playConnectionLossSound]);
 
   const playConnectionSound = useCallback(async () => {
     if (!outputAudioContextRef.current) return;
@@ -1032,34 +1115,6 @@ ${formattedHistory}
 
     oscillator.start(audioCtx.currentTime);
     oscillator.stop(audioCtx.currentTime + 0.35);
-  }, []);
-
-   const playDisconnectSound = useCallback(async () => {
-    if (!outputAudioContextRef.current) return;
-    const audioCtx = outputAudioContextRef.current;
-     if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
-
-    // This creates a softer, quicker "powering off" sound effect.
-    // It uses a triangle wave for a gentler tone and has a quick descending frequency sweep.
-    const osc = audioCtx.createOscillator();
-    const gainNode = audioCtx.createGain();
-    osc.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    
-    const now = audioCtx.currentTime;
-    osc.type = 'triangle'; // Softer than a sine wave
-    
-    // Quick descending sound
-    osc.frequency.setValueAtTime(440, now); // A4
-    osc.frequency.exponentialRampToValueAtTime(220, now + 0.2); // A3
-    
-    gainNode.gain.setValueAtTime(0.3, now); // Start at a moderate volume
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.3); // Fade out quickly
-
-    osc.start(now);
-    osc.stop(now + 0.35);
   }, []);
 
     const findTransaction = useCallback((query: string): Transaction | null => {
@@ -2309,19 +2364,15 @@ ${formattedHistory}
                     }
                     break;
                 case 'stopConversation':
-                    resultText = "Микрофон выключен.";
+                    resultText = "Отключаюсь.";
                     isIntentionalDisconnectRef.current = true;
-                    await synthesizeSpeech("Отключаюсь.");
-                    await playDisconnectSound();
-                    await disconnect();
+                    shouldDisconnectAfterTurnRef.current = true;
                     break;
                 case 'endSession':
-                    resultText = "Завершаю сеанс.";
+                    resultText = "До свидания.";
                     isIntentionalDisconnectRef.current = true;
+                    shouldDisconnectAfterTurnRef.current = true;
                     handleCollapse();
-                    await synthesizeSpeech("До свидания.");
-                    await playDisconnectSound();
-                    await disconnect();
                     break;
                 default:
                     console.warn(`Unknown function call received: ${fc.name}`);
@@ -2332,7 +2383,7 @@ ${formattedHistory}
             resultText = `Error executing function ${fc.name}.`;
         }
         return resultText;
-    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, playDisconnectSound, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudio]);
+    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudio]);
 
     useEffect(() => {
         executeFunctionCallRef.current = executeFunctionCall;
@@ -2341,7 +2392,6 @@ ${formattedHistory}
   const handleMicClick = async () => {
      if (isConnected) {
         isIntentionalDisconnectRef.current = true;
-        await playDisconnectSound();
         await disconnect();
      } else if (!isDictaphoneRecording) {
         // Centralized AudioContext creation and resume on user gesture
