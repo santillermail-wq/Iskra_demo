@@ -11,6 +11,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, (process as any).cwd(), '');
 
   return {
+    base: '/',
     define: {
       // Делаем переменную GEMINI_API_KEY доступной в клиентском коде как process.env.GEMINI_API_KEY
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
