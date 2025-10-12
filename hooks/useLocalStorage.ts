@@ -1,4 +1,3 @@
-// FIX: Import `React` to use its namespace for types like `React.Dispatch`.
 import React, { useState, useEffect } from 'react';
 
 function getStorageValue<T>(key: string, defaultValue: T): T {

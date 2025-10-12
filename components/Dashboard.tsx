@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { TranscriptItem, Source, FinanceData, Transaction, PlannerItem, NoteItem, ContactItem, CalendarEventItem, UserInstruction, VoiceSettings, StoredFile, Alarm, TimerState, StopwatchState } from '../types';
-// FIX: `apiCallWithRetry` is a separate export, not a property of `sendTextMessage`. It has been added to the import list.
 import { sendTextMessage, getAi, apiCallWithRetry } from '../services/geminiService';
 import { formatCurrency } from '../services/financeService';
 import { initDB, getAllInstructions, addInstruction, deleteInstructionById, getLatestChatLogForToday, saveChatLog, addFile, getAllFiles, getFileById, deleteFile, updateFile } from '../services/db';
@@ -338,7 +337,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   
   const currentUserTranscriptionRef = useRef('');
   const currentAssistantTranscriptionRef = useRef('');
-  // FIX: Allow `args` to be optional on the function call object to match the type from `@google/genai`.
   const executeFunctionCallRef = useRef<((fc: { name?: string, args?: any }) => Promise<string>) | null>(null);
   const isDictaphoneRecordingRef = useRef(isDictaphoneRecording);
 
@@ -536,7 +534,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   }, []);
 
   const connect = useCallback(async () => {
-    // FIX: Moved scheduleRetry inside connect to resolve circular dependency and "used before declaration" error.
     const scheduleRetry = (errorReason: string) => {
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
   
@@ -821,12 +818,9 @@ ${formattedHistory}
                 onmessage: async (message: LiveServerMessage) => {
                     if (message.toolCall) {
                         for (const fc of message.toolCall.functionCalls) {
-                            // FIX: The `FunctionCall` type from the API has an optional `name` property.
-                            // Add a guard to ensure `fc.name` exists before processing the function call.
                             if (executeFunctionCallRef.current && fc.name) {
                                 const result = await executeFunctionCallRef.current(fc);
                                 sessionPromiseRef.current?.then(session => {
-                                    // Also guard for `id` required by `sendToolResponse`
                                     if (fc.id) {
                                         session.sendToolResponse({
                                             functionResponses: {
@@ -1165,8 +1159,6 @@ ${formattedHistory}
         return { totalBalance, creditCardBalance, cashBalance };
     }, []);
 
-    // FIX: Moved `synthesizeSpeech` and `playAudio` before `executeFunctionCall`
-    // to resolve "used before declaration" errors as they are dependencies.
     const synthesizeSpeech = useCallback(async (text: string): Promise<Uint8Array> => {
         const speechTask = () => new Promise<Uint8Array>((resolve, reject) => {
             const audioChunks: Uint8Array[] = [];
@@ -1232,7 +1224,6 @@ ${formattedHistory}
                 reject(e);
             }
         });
-        // FIX: `apiCallWithRetry` is a standalone function, not a method on `sendTextMessage`.
         return apiCallWithRetry(speechTask, 3, 1000);
     }, []);
 
@@ -1264,7 +1255,6 @@ ${formattedHistory}
     }
   }, []);
 
-    // FIX: `handleRemoveFile` is used by `executeFunctionCall`, so it must be declared before it.
     const handleRemoveFile = useCallback(() => {
         setAttachedFile(null);
         setAttachedFileContent('');
@@ -1273,14 +1263,11 @@ ${formattedHistory}
         }
     }, []);
 
-  // FIX: Allow `args` to be optional on the function call object.
   const executeFunctionCall = useCallback(async (fc: { name?: string, args?: any }) => {
-        // FIX: Add a guard to handle function calls that may not have a name, as per the optional 'name' property in the FunctionCall type.
         if (!fc.name) {
             console.warn("Function call received without a name.", fc.args);
             return 'Error: function call received without a name.';
         }
-        // FIX: Default args to an empty object to prevent runtime errors if it's missing.
         const args = fc.args || {};
         console.log(`Executing function call: ${fc.name}`, args);
         let resultText = 'ok'; // Default success response
@@ -2390,11 +2377,6 @@ ${formattedHistory}
         await audioCtx.resume();
     }
     
-    // FIX: The original code had two errors:
-    // 1. `osc.loop = true;` is invalid because OscillatorNode does not have a `loop` property.
-    // 2. `alarmAudioSourceRef.current = osc;` caused a type mismatch because the ref expects an AudioBufferSourceNode.
-    // This revised implementation uses an OfflineAudioContext to render the oscillator's sound into an AudioBuffer.
-    // The buffer is then played using an AudioBufferSourceNode, which supports looping and matches the ref type.
     const OfflineAudioContext = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
     const duration = 0.5;
     const offlineCtx = new OfflineAudioContext(1, audioCtx.sampleRate * duration, audioCtx.sampleRate);
