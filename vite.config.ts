@@ -31,6 +31,7 @@ export default defineConfig(({ mode }) => {
       // Это убирает предупреждение от Vercel, не затрагивая логику приложения.
       chunkSizeWarningLimit: 1500,
       rollupOptions: {
+        input: './index.html',
         output: {
           manualChunks(id) {
             // Все библиотеки из node_modules будут сгруппированы в один чанк 'vendor'.
