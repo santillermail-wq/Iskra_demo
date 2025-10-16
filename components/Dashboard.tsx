@@ -101,6 +101,47 @@ function encode(bytes: Uint8Array) {
   return btoa(binary);
 }
 
+/**
+ * Creates a WAV file blob from raw 16-bit PCM audio data.
+ * This is crucial for playing Gemini's audio output reliably in the browser.
+ * @param pcmData The raw audio data (Int16Array or Uint8Array).
+ * @param sampleRate The sample rate of the audio (e.g., 24000).
+ * @returns A Blob representing the WAV file.
+ */
+function createWavBlob(pcmData: Uint8Array, sampleRate = 24000): Blob {
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const dataSize = pcmData.length;
+    const fileSize = 36 + dataSize;
+
+    const buffer = new ArrayBuffer(44);
+    const view = new DataView(buffer);
+
+    // RIFF header
+    view.setUint32(0, 0x52494646, false); // "RIFF"
+    view.setUint32(4, fileSize, true);
+    view.setUint32(8, 0x57415645, false); // "WAVE"
+
+    // fmt chunk
+    view.setUint32(12, 0x666d7420, false); // "fmt "
+    view.setUint32(16, 16, true); // Sub-chunk size (16 for PCM)
+    view.setUint16(20, 1, true); // Audio format (1 for PCM)
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+
+    // data chunk
+    view.setUint32(36, 0x64617461, false); // "data"
+    view.setUint32(40, dataSize, true);
+
+    return new Blob([view, pcmData], { type: 'audio/wav' });
+}
+
+
 async function decodeAudioData(
   data: Uint8Array,
   ctx: AudioContext,
@@ -240,7 +281,7 @@ const TABS: { view: View; title: string; icon: React.ReactNode }[] = [
     {
         view: 'finance',
         title: 'Финансы',
-        icon: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M11.8,10.9c-2.27-.59-3-1.2-3-2.15,0-1.09,1.01-1.85,2.7-1.85,1.78,0,2.44.85,2.5,2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5,1.68-3.5,3.61,0,2.31,1.91,3.46,4.7,4.13,2.5.6,3,1.48,3,2.41,0,1.07-.9,1.8-2.7,1.8-1.7,0-2.8-.8-2.8-2.03H5.2c.08,2.11,1.69,3.5,3.8,4.02V21h3v-2.15c2.05-.46,3.5-1.78,3.5-3.85,0-2.34-1.9-3.5-4.7-4.1Z"/></svg>
+        icon: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M11.8,10.9c-2.27-.59-3-1.2-3-2.15,0-1.09,1.01-1.85,2.7-1.85,1.78,0,2.44,.85,2.5,2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5,1.68-3.5,3.61,0,2.31,1.91,3.46,4.7,4.13,2.5.6,3,1.48,3,2.41,0,1.07-.9,1.8-2.7,1.8-1.7,0-2.8-.8-2.8-2.03H5.2c.08,2.11,1.69,3.5,3.8,4.02V21h3v-2.15c2.05-.46,3.5-1.78,3.5-3.85,0-2.34-1.9-3.5-4.7-4.1Z"/></svg>
     },
     {
         view: 'dictaphone',
@@ -610,166 +651,108 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     }
   }, [playDisconnectSound]);
 
-  const synthesizeSpeech = useCallback(async (text: string): Promise<Uint8Array> => {
-        const speechTask = () => new Promise<Uint8Array>((resolve, reject) => {
-            const audioChunks: Uint8Array[] = [];
-            try {
-                const sessionPromise = getAi().live.connect({
-                    model: 'gemini-2.5-flash-native-audio-preview-09-2025',
-                    config: {
-                        responseModalities: [Modality.AUDIO],
-                        speechConfig: {
-                            voiceConfig: { 
-                                prebuiltVoiceConfig: { 
-                                    voiceName: 'Zephyr'
-                                },
-                            },
+    const synthesizeSpeech = useCallback(async (text: string): Promise<Uint8Array> => {
+        const speechTask = async () => {
+            const ai = getAi();
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-preview-tts',
+                contents: [{ parts: [{ text: text }] }],
+                config: {
+                    responseModalities: [Modality.AUDIO],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: 'Zephyr' },
                         },
-                        systemInstruction: `You are a text-to-speech engine. Your only task is to say the following text exactly as it is written, without any additions or conversational filler. After you have said the text, do not say anything else. The text is: "${text}"`,
                     },
-                    callbacks: {
-                        onopen: async () => {
-                            try {
-                                const session = await sessionPromise;
-                                const silentFrame = new Uint8Array(320); // 10ms of 16-bit PCM silence
-                                const pcmBlob = {
-                                    data: encode(silentFrame),
-                                    mimeType: 'audio/pcm;rate=16000',
-                                };
-                                session.sendRealtimeInput({ media: pcmBlob });
-                            } catch (e) {
-                                console.error("Error triggering TTS response", e);
-                                reject(new Error('Failed to initiate speech synthesis.'));
-                            }
-                        },
-                        onmessage: (message: LiveServerMessage) => {
-                            if (message.serverContent?.modelTurn?.parts[0]?.inlineData?.data) {
-                                const base64Audio = message.serverContent.modelTurn.parts[0].inlineData.data;
-                                audioChunks.push(decode(base64Audio));
-                            }
-                            if (message.serverContent?.turnComplete) {
-                                sessionPromise.then(s => s.close()).catch(console.error);
-                            }
-                        },
-                        onerror: (e: any) => {
-                            console.error('TTS Session error:', e);
-                            reject(e);
-                        },
-                        onclose: () => {
-                            if (audioChunks.length === 0) {
-                                console.warn("Speech synthesis resulted in no audio data.");
-                            }
-                            const totalLength = audioChunks.reduce((acc, chunk) => acc + chunk.length, 0);
-                            const combined = new Uint8Array(totalLength);
-                            let offset = 0;
-                            for (const chunk of audioChunks) {
-                                combined.set(chunk, offset);
-                                offset += chunk.length;
-                            }
-                            resolve(combined);
-                        },
-                    }
-                });
-                sessionPromise.catch(reject);
-            } catch(e) {
-                reject(e);
+                },
+            });
+
+            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (base64Audio) {
+                return decode(base64Audio);
+            } else {
+                const blockReason = response.candidates?.[0]?.finishReason;
+                const safetyRatings = response.candidates?.[0]?.safetyRatings;
+                console.error("Speech synthesis failed.", { blockReason, safetyRatings });
+                throw new Error(`Speech synthesis returned no audio data. Reason: ${blockReason || 'Unknown'}`);
             }
-        });
+        };
         return apiCallWithRetry(speechTask, 3, 1000);
     }, []);
 
-  const playAudio = useCallback(async (audioBytes: Uint8Array) => {
-    if (audioBytes.length === 0) return;
-
-    if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+    const getOutputAudioContext = useCallback(async (): Promise<AudioContext> => {
+        if (outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
+            if (outputAudioContextRef.current.state === 'suspended') {
+                await outputAudioContextRef.current.resume().catch(e => console.error("Failed to resume audio context:", e));
+            }
+            return outputAudioContextRef.current;
+        }
         const WebkitAudioContext = (window as any).webkitAudioContext;
-        try {
-            outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-        } catch (e) {
-            console.error("Could not create audio context for reminder.", e);
-            return;
+        const newCtx = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
+        outputAudioContextRef.current = newCtx;
+        if (newCtx.state === 'suspended') {
+             await newCtx.resume().catch(e => console.error("Failed to resume new audio context:", e));
         }
-    }
+        return newCtx;
+    }, []);
 
-    if (outputAudioContextRef.current.state === 'suspended') {
-        try {
-            await outputAudioContextRef.current.resume();
-        } catch (e) {
-            console.error("Could not resume audio context for reminder.", e);
-            return;
-        }
-    }
+    const playAudioBlob = useCallback(async (blob: Blob): Promise<void> => {
+        return new Promise(async (resolve, reject) => {
+            if (!blob || blob.size < 44) { // 44 is WAV header size
+                return reject(new Error("Invalid audio blob provided."));
+            }
+            try {
+                setIsSpeaking(true);
+                const audioCtx = await getOutputAudioContext();
+                const arrayBuffer = await blob.arrayBuffer();
+                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
-
-    try {
-        const audioBuffer = await decodeAudioData(audioBytes, outputAudioContextRef.current, 24000, 1);
-        const source = outputAudioContextRef.current.createBufferSource();
-        source.buffer = audioBuffer;
-        
-        const outputNode = outputAudioContextRef.current.createGain();
-        outputNode.connect(outputAudioContextRef.current.destination);
-        source.connect(outputNode);
-
-        return new Promise<void>(resolve => {
-            source.start();
-            setIsSpeaking(true);
-            source.onended = () => {
+                const source = audioCtx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioCtx.destination);
+                
+                source.onended = () => {
+                    setIsSpeaking(false);
+                    resolve();
+                };
+                source.start();
+            } catch (e) {
                 setIsSpeaking(false);
-                resolve();
-            };
+                console.error("Audio playback failed with Web Audio API:", e);
+                reject(e);
+            }
         });
-    } catch(e) {
-        console.error("Error playing synthesized audio:", e);
-    }
-  }, []);
+    }, [getOutputAudioContext]);
 
-  const playTaskReminderSound = useCallback((): Promise<void> => {
-    return new Promise(async (resolve, reject) => {
-        if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-            const WebkitAudioContext = (window as any).webkitAudioContext;
-            try {
-                outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-            } catch (e) {
-                console.error("Could not create audio context for reminder.", e);
-                return reject(e);
+    const playTripleBeep = useCallback((): Promise<void> => {
+        const sampleRate = 24000;
+        const duration = 0.15;
+        const pause = 0.05;
+        const frequency = 1200;
+        const volume = 0.3;
+
+        const generateBeep = () => {
+            const buffer = new Int16Array(sampleRate * duration);
+            for (let i = 0; i < buffer.length; i++) {
+                buffer[i] = Math.sin((i / sampleRate) * frequency * 2 * Math.PI) * 32767 * volume;
             }
-        }
+            return buffer;
+        };
+        const generatePause = () => new Int16Array(sampleRate * pause);
 
-        const audioCtx = outputAudioContextRef.current;
-        if (audioCtx.state === 'suspended') {
-            try {
-                await audioCtx.resume();
-            } catch (e) {
-                console.error("Could not resume audio context for reminder.", e);
-                return reject(e);
-            }
-        }
-
-        const osc = audioCtx.createOscillator();
-        const gainNode = audioCtx.createGain();
-        osc.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-
-        const now = audioCtx.currentTime;
-        const duration = 0.6;
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, now); // A5
-        gainNode.gain.setValueAtTime(0.4, now);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
-
-        const osc2 = audioCtx.createOscillator();
-        osc2.connect(gainNode);
-        osc2.type = 'sine';
-        osc2.frequency.setValueAtTime(1046.5, now + 0.1); // C6
+        const beep = generateBeep();
+        const silence = generatePause();
         
-        osc.onended = () => resolve();
-
-        osc.start(now);
-        osc.stop(now + duration);
-        osc2.start(now + 0.1);
-        osc2.stop(now + duration);
-    });
-  }, []);
+        const fullAudio = new Int16Array(beep.length * 3 + silence.length * 2);
+        fullAudio.set(beep, 0);
+        fullAudio.set(silence, beep.length);
+        fullAudio.set(beep, beep.length + silence.length);
+        fullAudio.set(silence, beep.length * 2 + silence.length);
+        fullAudio.set(beep, beep.length * 2 + silence.length * 2);
+        
+        const wavBlob = createWavBlob(new Uint8Array(fullAudio.buffer), sampleRate);
+        return playAudioBlob(wavBlob);
+    }, [playAudioBlob]);
 
   const clearTaskReminder = useCallback((id: number, type: 'planner' | 'calendar') => {
     const key = `${type}-${id}`;
@@ -780,14 +763,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   }, []);
 
   const setTaskReminder = useCallback((item: PlannerItem | CalendarEventItem, type: 'planner' | 'calendar') => {
+    const itemId = item.id;
     const itemDate = item.date;
     const itemTime = 'time' in item ? item.time : undefined;
-    const itemId = item.id;
-    const itemText = 'text' in item ? item.text : item.title;
+    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
 
     clearTaskReminder(itemId, type);
 
-    if (item.completed || !itemTime) {
+    // CRITICAL FIX: Validate time format before proceeding.
+    // If format is invalid, we can't create a valid date, so we exit.
+    if (item.completed || !itemTime || !timeRegex.test(itemTime)) {
         return;
     }
 
@@ -795,16 +780,27 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     const now = new Date();
 
     if (reminderDateTime <= now) {
-        return; // Don't set reminders for past events
+        return;
     }
     
     const delay = reminderDateTime.getTime() - now.getTime();
 
     const timeoutId = setTimeout(async () => {
+        const itemText = 'text' in item ? item.text : item.title;
         try {
-            await playTaskReminderSound();
-            const reminderMessage = `Напоминаю, у вас была запланирована задача: "${itemText}" на ${itemTime}. Вы ее выполнили?`;
-
+            // Precise audio sequence: 1s pause -> triple beep -> 1s pause -> voice
+            await new Promise(r => setTimeout(r, 1000));
+            await playTripleBeep();
+            await new Promise(r => setTimeout(r, 1000));
+            
+            const reminderMessage = `Напоминаю, вы просили напомнить: ${itemText}. Вы это сделали?`;
+            const audioBytes = await synthesizeSpeech(reminderMessage);
+            const audioWavBlob = createWavBlob(audioBytes);
+            
+            // Play audio FIRST, before updating the chat.
+            await playAudioBlob(audioWavBlob);
+            
+            // If audio was successful, now add the message to the chat.
             setTranscriptHistory(prev => [...prev, {
                 id: `reminder-${itemId}-${Date.now()}`,
                 author: 'assistant',
@@ -812,13 +808,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
                 type: 'message',
                 timestamp: Date.now()
             }]);
-
-            const audioBytes = await synthesizeSpeech(reminderMessage);
-            await playAudio(audioBytes);
-
+            
             awaitingConfirmationRef.current = { type, id: itemId };
+
         } catch (error) {
-            console.error("Failed to execute task reminder:", error);
+            console.error("Failed to execute task reminder sequence:", error);
+            // If any part of the audio sequence fails, post an error to the chat.
+            setTranscriptHistory(prev => [...prev, {
+                id: `reminder-error-${itemId}-${Date.now()}`,
+                author: 'assistant',
+                text: `[Не удалось воспроизвести напоминание для: "${itemText}". Проверьте разрешения на звук в браузере.]`,
+                type: 'error',
+                timestamp: Date.now()
+            }]);
         } finally {
             taskRemindersRef.current.delete(`${type}-${itemId}`);
         }
@@ -826,7 +828,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     
     taskRemindersRef.current.set(`${type}-${itemId}`, timeoutId);
 
-  }, [clearTaskReminder, playTaskReminderSound, synthesizeSpeech, playAudio]);
+  }, [clearTaskReminder, playTripleBeep, synthesizeSpeech, playAudioBlob]);
 
   useEffect(() => {
     if (isDbReady) {
@@ -907,10 +909,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
         }
         await inputAudioContextRef.current.resume();
 
-        if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-            outputAudioContextRef.current = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-        }
-        await outputAudioContextRef.current.resume();
+        // Use the robust getter for the output context as well
+        await getOutputAudioContext();
+
     } catch (e) {
         console.error("Failed to initialize and resume AudioContexts:", e);
         setStatus("Ошибка аудио. Проверьте разрешения.");
@@ -956,7 +957,19 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
             }).join('\n\n')
           : 'No previous conversation history.';
 
+        const now = new Date();
+        const currentTimeForModel = now.toLocaleString('ru-RU', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZoneName: 'short'
+        });
+
         let systemInstruction = `${instructionBlock}You are Iskra, a friendly and helpful AI assistant.
+The user's current local time is ${currentTimeForModel}. Use this information to correctly interpret relative time requests (e.g., "in 15 minutes", "tomorrow at 9 AM").
 ATTENTION: You may be reconnecting to an ongoing conversation after a network interruption. It is CRITICAL that you re-read the entire chat history provided below to regain context. Failure to do so will lead to irrelevant responses. Upon reconnecting, your first response MUST be a direct and relevant continuation of the last user message in the history.
 
 CRITICAL RULE: Your most important task is to maintain conversation continuity. You MUST first silently review the ENTIRE conversation history provided below. This is not optional. Your response must be directly informed by the preceding context.
@@ -977,8 +990,8 @@ ${formattedHistory}
         const ai = getAi();
         let nextStartTime = 0;
 
-        const outputNode = outputAudioContextRef.current.createGain();
-        outputNode.connect(outputAudioContextRef.current.destination);
+        const outputNode = outputAudioContextRef.current!.createGain();
+        outputNode.connect(outputAudioContextRef.current!.destination);
 
         sessionPromiseRef.current = ai.live.connect({
             model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -1180,12 +1193,19 @@ ${formattedHistory}
                            return;
                         }
                         
+                        // Ensure the output audio context is running before attempting to play audio.
+                        const audioCtx = await getOutputAudioContext();
+                        if (!audioCtx) {
+                            console.error("Output audio context is not available for playback.");
+                            return;
+                        }
+
                         setIsSpeaking(true);
                         const base64Audio = message.serverContent.modelTurn.parts[0].inlineData.data;
                         const audioBytes = decode(base64Audio);
-                        const audioBuffer = await decodeAudioData(audioBytes, outputAudioContextRef.current!, 24000, 1);
+                        const audioBuffer = await decodeAudioData(audioBytes, audioCtx, 24000, 1);
                         
-                        const source = outputAudioContextRef.current!.createBufferSource();
+                        const source = audioCtx.createBufferSource();
                         source.buffer = audioBuffer;
                         source.connect(outputNode);
                         
@@ -1197,7 +1217,7 @@ ${formattedHistory}
                             }
                         };
                         
-                        const now = outputAudioContextRef.current!.currentTime;
+                        const now = audioCtx.currentTime;
                         nextStartTime = Math.max(now, nextStartTime);
                         source.start(nextStartTime);
                         nextStartTime += audioBuffer.duration;
@@ -1250,13 +1270,6 @@ ${formattedHistory}
                                 } else if (confirmationContext.type === 'calendar') {
                                     setCalendarEvents(prev => prev.map(item => item.id === confirmationContext.id ? { ...item, completed: true } : item));
                                 }
-                                const confirmationMessage = "Отлично! Я отметил задачу как выполненную.";
-                                setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: confirmationMessage, type: 'message', timestamp: Date.now() }]);
-                                synthesizeSpeech(confirmationMessage).then(playAudio);
-                            } else {
-                                const followupMessage = "Хорошо, я оставлю задачу активной.";
-                                setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: followupMessage, type: 'message', timestamp: Date.now() }]);
-                                synthesizeSpeech(followupMessage).then(playAudio);
                             }
                         }
 
@@ -1367,7 +1380,7 @@ ${formattedHistory}
             }
         }
     }
-  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, playConnectionLossSound, synthesizeSpeech, playAudio, setPlannerContent, setCalendarEvents]);
+  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, playConnectionLossSound, synthesizeSpeech, playAudioBlob, setPlannerContent, setCalendarEvents, getOutputAudioContext]);
 
   const playConnectionSound = useCallback(async () => {
     if (!outputAudioContextRef.current) return;
@@ -1552,13 +1565,18 @@ ${formattedHistory}
                 }
                 case 'startTimer': {
                     const { durationInSeconds, label } = args;
+                    if (durationInSeconds <= 0) {
+                        resultText = "Нельзя установить таймер на ноль или отрицательное время.";
+                        break;
+                    }
                     const id = `timer_${Date.now()}`;
                     const endTime = Date.now() + durationInSeconds * 1000;
 
-                    const timeoutId = setTimeout(() => {
+                    const timeoutId = setTimeout(async () => {
                         const message = `Таймер "${label}" завершен.`;
                         setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: message, type: 'message', timestamp: Date.now() }]);
-                        synthesizeSpeech(message).then(playAudio);
+                        const audioBytes = await synthesizeSpeech(message);
+                        playAudioBlob(createWavBlob(audioBytes));
                         internalTimersRef.current.delete(id);
                     }, durationInSeconds * 1000);
 
@@ -2342,24 +2360,35 @@ ${formattedHistory}
                     break;
                 }
                 case 'addPlannerEntry': {
-                    const { text, time } = args;
-                    if (typeof text === 'string' && text.trim()) {
-                        const newItem: PlannerItem = {
-                            id: Date.now(),
-                            text: text.trim(),
-                            date: new Date().toISOString().slice(0, 10),
-                            time: time,
-                            completed: false,
-                        };
-                        setPlannerContent(prev => [newItem, ...prev].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.id - a.id));
-                        setTaskReminder(newItem, 'planner');
-                        resultText = `Задача добавлена в планировщик: "${text}"`;
-                         if (time) {
-                            resultText += ` на ${time}. Я напомню вам.`;
-                        }
-                    } else {
-                        resultText = "Не удалось добавить запись: неверные параметры.";
+                    const { text, time, date } = args;
+                    if (!text || typeof text !== 'string' || !text.trim()) {
+                        resultText = "Не удалось добавить запись: не указан текст задачи.";
+                        break;
                     }
+                    
+                    const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+                    if (!time || !timeRegex.test(time)) {
+                        resultText = "Не удалось установить напоминание: не указано или неверно отформатировано время.";
+                        break;
+                    }
+
+                    const taskDate = (date && /^\d{4}-\d{2}-\d{2}$/.test(date))
+                        ? date
+                        : new Date().toISOString().slice(0, 10);
+
+                    const newItem: PlannerItem = {
+                        id: Date.now(),
+                        text: text.trim(),
+                        date: taskDate,
+                        time: time,
+                        completed: false,
+                    };
+
+                    setPlannerContent(prev => [newItem, ...prev].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.id - a.id));
+                    
+                    const formattedDate = new Date(taskDate + 'T00:00:00').toLocaleDateString('ru-RU');
+                    resultText = `Задача добавлена в планировщик: "${text}" на ${formattedDate} в ${time}. Я напомню вам.`;
+                    setTaskReminder(newItem, 'planner');
                     break;
                 }
                 case 'getPlannerContent': {
@@ -2575,7 +2604,7 @@ ${formattedHistory}
             resultText = `Error executing function ${fc.name}.`;
         }
         return resultText;
-    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudio, setTaskReminder]);
+    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudioBlob, setTaskReminder, getOutputAudioContext]);
 
     useEffect(() => {
         executeFunctionCallRef.current = executeFunctionCall;
@@ -2599,11 +2628,8 @@ ${formattedHistory}
 
   const playAlarmSound = useCallback(async () => {
     if (alarmAudioSourceRef.current) return;
-    if (!outputAudioContextRef.current) return;
-    const audioCtx = outputAudioContextRef.current;
-     if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
+    const audioCtx = await getOutputAudioContext();
+    if (!audioCtx) return;
     
     const OfflineAudioContext = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
     const duration = 0.5;
@@ -2631,7 +2657,7 @@ ${formattedHistory}
     source.start();
     
     alarmAudioSourceRef.current = source;
-  }, []);
+  }, [getOutputAudioContext]);
 
   // Effect for checking alarms
   useEffect(() => {
@@ -2662,7 +2688,7 @@ ${formattedHistory}
             
             playAlarmSound();
             synthesizeSpeech(message)
-                .then(playAudio)
+                .then(audioBytes => playAudioBlob(createWavBlob(audioBytes)))
                 .catch(error => {
                     console.error("Failed to synthesize or play alarm sound:", error);
                     // This catch block prevents the app from crashing if synthesis fails on load.
@@ -2672,7 +2698,7 @@ ${formattedHistory}
     }, 1000); // Check every second
 
     return () => clearInterval(interval);
-  }, [alarms, activeAlarm, playAlarmSound, synthesizeSpeech, playAudio]);
+  }, [alarms, activeAlarm, playAlarmSound, synthesizeSpeech, playAudioBlob]);
 
   const handleSendText = async (messageOverride?: string) => {
     const textToSend = messageOverride || inputText.trim();
@@ -2717,7 +2743,7 @@ ${formattedHistory}
 
             setStatus('Синтез речи...');
             const audioBytes = await synthesizeSpeech(response.text);
-            await playAudio(audioBytes);
+            await playAudioBlob(createWavBlob(audioBytes));
         }
         
         if (response.functionCalls && response.functionCalls.length > 0) {
@@ -2737,7 +2763,7 @@ ${formattedHistory}
                          }
                      ]);
                      const audioBytes = await synthesizeSpeech(resultText);
-                     await playAudio(audioBytes);
+                     await playAudioBlob(createWavBlob(audioBytes));
                  }
             }
         }
@@ -2857,7 +2883,7 @@ ${formattedHistory}
              type: 'message',
              timestamp: Date.now()
         }]);
-        synthesizeSpeech(question).then(playAudio);
+        synthesizeSpeech(question).then(audioBytes => playAudioBlob(createWavBlob(audioBytes)));
 
     } catch (error) {
         console.error("Error processing file:", error);

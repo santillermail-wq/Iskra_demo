@@ -66,7 +66,7 @@ export interface PlannerItem {
     id: number;
     text: string;
     date: string; // YYYY-MM-DD
-    time?: string; // HH:MM
+    time?: string | null; // HH:MM
     completed: boolean;
 }
 
@@ -720,22 +720,27 @@ export const endSessionFunctionDeclaration: FunctionDeclaration = {
 
 export const addPlannerEntryFunctionDeclaration: FunctionDeclaration = {
   name: 'addPlannerEntry',
-  description: 'Adds a new task or to-do item to the organizer/planner. Can be a single item or a list. Each item should be a separate call unless the user provides a list.',
+  description: 'Adds a task with a VISIBLE countdown timer to the planner. This is the ONLY function for setting one-time, user-facing reminders. When the user asks for a reminder (e.g., "remind me in 15 minutes to call Mom" or "remind me tomorrow at 9 AM to check email"), you MUST perform three actions: 1. Format the task text as "Напомнить о [action]" (e.g., "Напомнить о звонке маме"). 2. CRITICALLY: You MUST calculate the exact future time and provide it in the "time" parameter in strict HH:MM format. Convert all relative times (e.g., "in 10 minutes") to an absolute HH:MM time. 3. CRITICALLY: You MUST determine the correct date and provide it in the "date" parameter in strict YYYY-MM-DD format. If the user doesn\'t specify a date, assume today.',
   parameters: {
     type: Type.OBJECT,
     properties: {
       text: {
         type: Type.STRING,
-        description: 'The text content of the task to add to the organizer.',
+        description: 'The content of the task. For reminders, it MUST start with "Напомнить о ...".',
       },
       time: {
         type: Type.STRING,
-        description: 'Optional. The time for the task in HH:MM format. If a time is mentioned in the task text, it MUST be extracted and provided here.'
+        description: "CRITICAL AND MANDATORY for reminders. The absolute time for the task in strict HH:MM format (e.g., '17:30'). You MUST calculate this from the user's request."
+      },
+      date: {
+        type: Type.STRING,
+        description: "Optional. The date for the task in YYYY-MM-DD format. If not specified by the user, you must default to today's date."
       }
     },
-    required: ['text'],
+    required: ['text', 'time'],
   },
 };
+
 
 export const getPlannerContentFunctionDeclaration: FunctionDeclaration = {
   name: 'getPlannerContent',
@@ -845,7 +850,7 @@ export const deleteFileFromStorageFunctionDeclaration: FunctionDeclaration = {
 // --- Toolbox (Timer/Alarm) Functions ---
 export const setAlarmFunctionDeclaration: FunctionDeclaration = {
   name: 'setAlarm',
-  description: 'Sets a new alarm or updates an existing one for a specific time. Always opens the Toolbox panel to show the result.',
+  description: 'Sets a new daily, recurring alarm (like a wake-up clock). Always opens the Toolbox panel to show the result. CRITICAL: Do NOT use for one-time task reminders. Use `addPlannerEntry` for that.',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -876,7 +881,7 @@ export const stopAlarmFunctionDeclaration: FunctionDeclaration = {
 
 export const startTimerFunctionDeclaration: FunctionDeclaration = {
   name: 'startTimer',
-  description: 'Starts a non-visible countdown timer for the assistant to track something. Announce when finished.',
+  description: "Starts an INVISIBLE background timer that the user cannot see. Use this ONLY for system tasks or when the user explicitly asks for a 'timer' without mentioning a task, e.g., 'set a timer for 10 minutes'. Do NOT use this for reminders like 'remind me to...'. For that, use `addPlannerEntry`.",
   parameters: {
     type: Type.OBJECT,
     properties: {

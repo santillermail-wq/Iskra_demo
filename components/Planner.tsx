@@ -1,61 +1,62 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { PlannerItem } from '../types';
 
-interface PlannerProps {
-    content: PlannerItem[];
-    setContent: (value: React.SetStateAction<PlannerItem[]>) => void;
-}
-
 const formatTimer = (totalSeconds: number): string => {
-    if (totalSeconds < 0) return '00:00:00';
-    const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
-    const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
-    const seconds = (totalSeconds % 60).toString().padStart(2, '0');
-    return `${hours}:${minutes}:${seconds}`;
+    if (totalSeconds < 0) totalSeconds = 0;
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    
+    return `${days}:${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 };
 
 const TaskTimer: React.FC<{ item: PlannerItem }> = ({ item }) => {
-    const calculateRemaining = () => {
+    const calculateRemaining = useCallback(() => {
         if (!item.time || item.completed) {
             return null;
         }
-        
         const targetDateTime = new Date(`${item.date}T${item.time}`);
         const now = new Date();
-
-        // Only create timers for tasks scheduled for the current calendar day.
-        if (targetDateTime.toDateString() !== now.toDateString()) {
-            return null;
-        }
-        
-        const diff = Math.round((targetDateTime.getTime() - now.getTime()) / 1000);
-        return diff > 0 ? diff : 0;
-    };
+        return Math.round((targetDateTime.getTime() - now.getTime()) / 1000);
+    }, [item.date, item.time, item.completed]);
 
     const [remainingSeconds, setRemainingSeconds] = useState(calculateRemaining());
 
     useEffect(() => {
-        // No need to run an interval if there's no time to count down to.
-        if (remainingSeconds === null) return;
-
+        if (remainingSeconds === null || remainingSeconds <= 0) {
+            return;
+        }
         const timerId = setInterval(() => {
-            setRemainingSeconds(calculateRemaining());
+            setRemainingSeconds(s => (s !== null ? s - 1 : null));
         }, 1000);
-
         return () => clearInterval(timerId);
-    }, [item]); // Rerun effect if the item itself changes.
+    }, [remainingSeconds]);
 
-    if (remainingSeconds === null || remainingSeconds <= 0) {
+    useEffect(() => {
+        setRemainingSeconds(calculateRemaining());
+    }, [calculateRemaining]);
+
+    if (remainingSeconds === null) {
         return null;
     }
 
+    const isExpired = remainingSeconds <= 0;
+    const displaySeconds = Math.max(0, remainingSeconds);
+    const colorClass = isExpired ? 'text-red-500' : 'text-cyan-400';
+
     return (
-        <div className="font-mono text-sm text-cyan-400 bg-black/20 px-2 py-1 rounded-md">
-            {formatTimer(remainingSeconds)}
+        <div className={`font-mono text-sm ${colorClass} bg-black/20 px-2 py-1 rounded-md`}>
+            {formatTimer(displaySeconds)}
         </div>
     );
 };
 
+
+interface PlannerProps {
+    content: PlannerItem[];
+    setContent: React.Dispatch<React.SetStateAction<PlannerItem[]>>;
+}
 
 const Planner: React.FC<PlannerProps> = ({ content, setContent }) => {
     const [newTaskText, setNewTaskText] = useState('');
@@ -89,7 +90,7 @@ const Planner: React.FC<PlannerProps> = ({ content, setContent }) => {
     };
 
     const groupedItems = useMemo(() => {
-        return content.reduce((acc, item) => {
+        const groups = content.reduce((acc, item) => {
             const date = item.date;
             if (!acc[date]) {
                 acc[date] = [];
@@ -97,9 +98,21 @@ const Planner: React.FC<PlannerProps> = ({ content, setContent }) => {
             acc[date].push(item);
             return acc;
         }, {} as Record<string, PlannerItem[]>);
+
+        // Sort items within each date group by time (earliest first)
+        for (const date in groups) {
+            groups[date].sort((a, b) => {
+                const timeA = a.time || '00:00';
+                const timeB = b.time || '00:00';
+                return timeA.localeCompare(timeB);
+            });
+        }
+        
+        return groups;
     }, [content]);
 
-    const sortedDates = Object.keys(groupedItems).sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+    // Sort dates ascending (earliest first)
+    const sortedDates = Object.keys(groupedItems).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
 
     return (
         <div className="h-full p-4 sm:p-6 flex flex-col text-white">
@@ -137,30 +150,34 @@ const Planner: React.FC<PlannerProps> = ({ content, setContent }) => {
                                 {new Date(date + 'T00:00:00').toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}
                             </h3>
                             <ul className="space-y-2">
-                                {groupedItems[date].map(item => (
-                                    <li key={item.id} className="bg-white/5 p-3 rounded-md flex items-center gap-3 group">
-                                        <input
-                                            type="checkbox"
-                                            checked={item.completed}
-                                            onChange={() => handleToggleComplete(item.id)}
-                                            className="w-5 h-5 rounded bg-gray-700 border-gray-500 text-cyan-500 focus:ring-cyan-600 cursor-pointer"
-                                            aria-labelledby={`task-label-${item.id}`}
-                                        />
-                                        <label id={`task-label-${item.id}`} className={`flex-1 text-gray-200 transition-colors ${item.completed ? 'line-through text-gray-500' : ''}`}>
-                                            {item.text}
-                                        </label>
-                                        <TaskTimer item={item} />
-                                        <button
-                                            onClick={() => handleDelete(item.id)}
-                                            className="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                                            aria-label="Delete task"
-                                        >
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.607a1 1 0 010-1.414z" clipRule="evenodd" />
-                                            </svg>
-                                        </button>
-                                    </li>
-                                ))}
+                                {groupedItems[date].map(item => {
+                                    return (
+                                        <li key={item.id} className="bg-white/5 p-3 rounded-md flex items-center gap-3 group">
+                                            <input
+                                                type="checkbox"
+                                                checked={item.completed}
+                                                onChange={() => handleToggleComplete(item.id)}
+                                                className="w-5 h-5 rounded bg-gray-700 border-gray-500 text-cyan-500 focus:ring-cyan-600 cursor-pointer"
+                                                aria-labelledby={`task-label-${item.id}`}
+                                            />
+                                            <label id={`task-label-${item.id}`} className={`flex-1 text-gray-200 transition-colors ${item.completed ? 'line-through text-gray-500' : ''}`}>
+                                                {item.text}
+                                            </label>
+
+                                            {!!item.time && <TaskTimer item={item} />}
+                                            
+                                            <button
+                                                onClick={() => handleDelete(item.id)}
+                                                className="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                aria-label="Delete task"
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.607a1 1 0 010-1.414z" clipRule="evenodd" />
+                                                </svg>
+                                            </button>
+                                        </li>
+                                    );
+                                })}
                             </ul>
                         </div>
                     ))
