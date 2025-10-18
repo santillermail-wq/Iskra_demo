@@ -120,6 +120,40 @@ export const getLatestChatLogForToday = (dateKey: string): Promise<ChatLog | nul
     });
 };
 
+export const deleteChatLogsByDate = (dateKey: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+        if (!db) return reject("Database not initialized.");
+        const transaction = db.transaction([CHAT_HISTORY_STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(CHAT_HISTORY_STORE_NAME);
+        const index = store.index('date');
+        const keyRange = IDBKeyRange.only(dateKey);
+        const request = index.openCursor(keyRange);
+
+        request.onsuccess = () => {
+            const cursor = request.result;
+            if (cursor) {
+                store.delete(cursor.primaryKey);
+                cursor.continue();
+            } else {
+                resolve();
+            }
+        };
+        request.onerror = (e) => reject(e);
+    });
+};
+
+export const deleteAllChatLogs = (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+        if (!db) return reject("Database not initialized.");
+        const transaction = db.transaction([CHAT_HISTORY_STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(CHAT_HISTORY_STORE_NAME);
+        const request = store.clear();
+
+        request.onsuccess = () => resolve();
+        request.onerror = (e) => reject(e);
+    });
+};
+
 
 // --- Recordings Functions ---
 

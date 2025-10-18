@@ -4,6 +4,7 @@ import { addCacheEntry, getCacheEntry, getAllInstructions } from './db';
 import { 
     setPanelStateFunctionDeclaration, 
     clearChatHistoryFunctionDeclaration, 
+    deleteChatArchiveFunctionDeclaration,
     clearAllRecordingsFunctionDeclaration,
     startDictaphoneRecordingFunctionDeclaration,
     stopDictaphoneRecordingFunctionDeclaration,
@@ -223,6 +224,7 @@ You can control the application UI using the provided functions. You can search 
                         generateStatementFunctionDeclaration,
                         calculateDailySpendingAllowanceFunctionDeclaration,
                         clearChatHistoryFunctionDeclaration,
+                        deleteChatArchiveFunctionDeclaration,
                         clearAllRecordingsFunctionDeclaration,
                         startDictaphoneRecordingFunctionDeclaration,
                         stopDictaphoneRecordingFunctionDeclaration,

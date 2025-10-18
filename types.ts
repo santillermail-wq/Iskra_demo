@@ -551,6 +551,21 @@ export const clearChatHistoryFunctionDeclaration: FunctionDeclaration = {
   },
 };
 
+export const deleteChatArchiveFunctionDeclaration: FunctionDeclaration = {
+  name: 'deleteChatArchive',
+  description: 'Deletes saved chat archives. The user can specify a date (e.g., "yesterday", "all"). This is a destructive action, so the user must be asked for confirmation before this function is called. The model must convert relative dates to YYYY-MM-DD format.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      dateQuery: {
+        type: Type.STRING,
+        description: 'The date of the chat to delete in YYYY-MM-DD format, or the keyword "all" to delete all archives. e.g., "2024-07-28", "all".',
+      },
+    },
+    required: ['dateQuery'],
+  },
+};
+
 export const clearAllRecordingsFunctionDeclaration: FunctionDeclaration = {
   name: 'clearAllRecordings',
   description: "Permanently deletes all saved audio recordings from the file storage. This is a highly destructive action; the user must be asked for confirmation before this function is called.",

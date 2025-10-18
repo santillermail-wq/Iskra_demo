@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { TranscriptItem, Source, FinanceData, Transaction, PlannerItem, NoteItem, ContactItem, CalendarEventItem, UserInstruction, VoiceSettings, StoredFile, Alarm, TimerState, StopwatchState } from '../types';
 import { sendTextMessage, getAi, apiCallWithRetry } from '../services/geminiService';
 import { formatCurrency } from '../services/financeService';
-import { initDB, getAllInstructions, addInstruction, deleteInstructionById, getLatestChatLogForToday, saveChatLog, addFile, getAllFiles, getFileById, deleteFile, updateFile } from '../services/db';
+import { initDB, getAllInstructions, addInstruction, deleteInstructionById, getLatestChatLogForToday, saveChatLog, addFile, getAllFiles, getFileById, deleteFile, updateFile, deleteChatLogsByDate, deleteAllChatLogs } from '../services/db';
 import { Modality, LiveServerMessage } from '@google/genai';
 import Dictaphone, { DictaphoneHandles } from './Dictaphone';
 import Finance from './Finance';
@@ -13,6 +13,7 @@ import AssistantConfig from './AssistantConfig';
 import { 
     setPanelStateFunctionDeclaration, 
     clearChatHistoryFunctionDeclaration, 
+    deleteChatArchiveFunctionDeclaration,
     clearAllRecordingsFunctionDeclaration,
     startDictaphoneRecordingFunctionDeclaration,
     stopDictaphoneRecordingFunctionDeclaration,
@@ -1021,6 +1022,7 @@ ${formattedHistory}
                         generateStatementFunctionDeclaration,
                         calculateDailySpendingAllowanceFunctionDeclaration,
                         clearChatHistoryFunctionDeclaration, 
+                        deleteChatArchiveFunctionDeclaration,
                         clearAllRecordingsFunctionDeclaration,
                         startDictaphoneRecordingFunctionDeclaration,
                         stopDictaphoneRecordingFunctionDeclaration,
@@ -2495,6 +2497,30 @@ ${formattedHistory}
                     currentChatLogIdRef.current = null; // Next message will start a new session
                     resultText = 'Начинаем новый чат. Предыдущая беседа сохранена.';
                     break;
+                case 'deleteChatArchive': {
+                    const { dateQuery } = args;
+                    if (!dateQuery) {
+                        resultText = "Необходимо указать, какой архив удалить (например, 'вчерашний' или 'все').";
+                        break;
+                    }
+
+                    if (dateQuery.toLowerCase() === 'all') {
+                        await deleteAllChatLogs();
+                        setTranscriptHistory([]);
+                        currentChatLogIdRef.current = null;
+                        resultText = "Все архивы чатов были удалены.";
+                    } else {
+                        // Assume dateQuery is a YYYY-MM-DD string
+                        const todayKey = getTodayDateKey();
+                        if (dateQuery === todayKey) {
+                            resultText = "Нельзя удалить сегодняшний активный чат. Используйте функцию 'очистить историю чата', чтобы начать новый сеанс.";
+                        } else {
+                            await deleteChatLogsByDate(dateQuery);
+                            resultText = `Архив чата за ${dateQuery} был удален.`;
+                        }
+                    }
+                    break;
+                }
                 case 'clearAllRecordings': {
                     const audioFiles = storedFiles.filter(f => f.type === 'audio');
                     for (const file of audioFiles) {
