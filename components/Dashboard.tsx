@@ -35,6 +35,7 @@ import {
     readDictaphoneTranscriptFunctionDeclaration,
     getDictaphoneTranscriptContentFunctionDeclaration,
     addPlannerEntryFunctionDeclaration,
+    markPlannerEntryAsCompletedFunctionDeclaration,
     getPlannerContentFunctionDeclaration,
     clearPlannerContentFunctionDeclaration,
     generateDailySummaryFunctionDeclaration,
@@ -239,6 +240,7 @@ const migratePlannerData = () => {
                     text: line.substring(2),
                     date: today,
                     completed: false,
+                    creationDate: Date.now() + index,
                 }));
             localStorage.setItem(key, JSON.stringify(migratedItems));
         }
@@ -1034,6 +1036,7 @@ ${formattedHistory}
                         stopConversationFunctionDeclaration,
                         endSessionFunctionDeclaration,
                         addPlannerEntryFunctionDeclaration,
+                        markPlannerEntryAsCompletedFunctionDeclaration,
                         getPlannerContentFunctionDeclaration,
                         clearPlannerContentFunctionDeclaration,
                         generateDailySummaryFunctionDeclaration,
@@ -2382,6 +2385,7 @@ ${formattedHistory}
                         date: taskDate,
                         time: time,
                         completed: false,
+                        creationDate: Date.now(),
                     };
 
                     setPlannerContent(prev => [newItem, ...prev].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.id - a.id));
@@ -2389,6 +2393,21 @@ ${formattedHistory}
                     const formattedDate = new Date(taskDate + 'T00:00:00').toLocaleDateString('ru-RU');
                     resultText = `Задача добавлена в планировщик: "${text}" на ${formattedDate} в ${time}. Я напомню вам.`;
                     setTaskReminder(newItem, 'planner');
+                    break;
+                }
+                case 'markPlannerEntryAsCompleted': {
+                    const { query } = args;
+                    let found = false;
+                    let taskText = '';
+                    setPlannerContent(prev => prev.map(item => {
+                        if (!item.completed && item.text.toLowerCase().includes(query.toLowerCase())) {
+                            found = true;
+                            taskText = item.text;
+                            return { ...item, completed: true };
+                        }
+                        return item;
+                    }));
+                    resultText = found ? `Задача "${taskText}" отмечена как выполненная.` : `Незавершенная задача со словами "${query}" не найдена.`;
                     break;
                 }
                 case 'getPlannerContent': {

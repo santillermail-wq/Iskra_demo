@@ -68,6 +68,7 @@ export interface PlannerItem {
     date: string; // YYYY-MM-DD
     time?: string | null; // HH:MM
     completed: boolean;
+    creationDate: number;
 }
 
 export interface NoteItem {
@@ -741,6 +742,17 @@ export const addPlannerEntryFunctionDeclaration: FunctionDeclaration = {
   },
 };
 
+export const markPlannerEntryAsCompletedFunctionDeclaration: FunctionDeclaration = {
+  name: 'markPlannerEntryAsCompleted',
+  description: 'Marks a specific task in the planner as completed. Use the task text to identify it.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      query: { type: Type.STRING, description: 'The text content of the task to mark as completed (e.g., "buy milk").' },
+    },
+    required: ['query'],
+  },
+};
 
 export const getPlannerContentFunctionDeclaration: FunctionDeclaration = {
   name: 'getPlannerContent',

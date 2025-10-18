@@ -18,36 +18,47 @@ const TaskTimer: React.FC<{ item: PlannerItem }> = ({ item }) => {
         }
         const targetDateTime = new Date(`${item.date}T${item.time}`);
         const now = new Date();
-        return Math.round((targetDateTime.getTime() - now.getTime()) / 1000);
+        // Return 0 if the time is in the past
+        return Math.max(0, Math.round((targetDateTime.getTime() - now.getTime()) / 1000));
     }, [item.date, item.time, item.completed]);
 
     const [remainingSeconds, setRemainingSeconds] = useState(calculateRemaining());
 
     useEffect(() => {
-        if (remainingSeconds === null || remainingSeconds <= 0) {
+        // Do not start a timer if the task has no time or is completed
+        if (item.completed || !item.time) {
+            setRemainingSeconds(null);
             return;
         }
-        const timerId = setInterval(() => {
-            setRemainingSeconds(s => (s !== null ? s - 1 : null));
-        }, 1000);
-        return () => clearInterval(timerId);
-    }, [remainingSeconds]);
 
-    useEffect(() => {
+        // Set up an interval that recalculates the remaining time every second.
+        // This is more robust against browser tab throttling than a setTimeout chain.
+        const timerId = setInterval(() => {
+            const remaining = calculateRemaining();
+            setRemainingSeconds(remaining);
+            // Stop the interval once the timer reaches zero
+            if (remaining !== null && remaining <= 0) {
+                clearInterval(timerId);
+            }
+        }, 1000);
+
+        // Immediately update the timer on first render or when item props change
         setRemainingSeconds(calculateRemaining());
-    }, [calculateRemaining]);
+
+        // Cleanup the interval when the component unmounts or its dependencies change.
+        return () => clearInterval(timerId);
+    }, [item.date, item.time, item.completed, calculateRemaining]);
 
     if (remainingSeconds === null) {
         return null;
     }
 
     const isExpired = remainingSeconds <= 0;
-    const displaySeconds = Math.max(0, remainingSeconds);
     const colorClass = isExpired ? 'text-red-500' : 'text-cyan-400';
 
     return (
         <div className={`font-mono text-sm ${colorClass} bg-black/20 px-2 py-1 rounded-md`}>
-            {formatTimer(displaySeconds)}
+            {formatTimer(remainingSeconds)}
         </div>
     );
 };
@@ -68,6 +79,7 @@ const Planner: React.FC<PlannerProps> = ({ content, setContent }) => {
             text: newTaskText.trim(),
             date: new Date().toISOString().slice(0, 10),
             completed: false,
+            creationDate: Date.now(),
         };
         setContent(prev => [newItem, ...prev]);
         setNewTaskText('');
@@ -153,6 +165,9 @@ const Planner: React.FC<PlannerProps> = ({ content, setContent }) => {
                                 {groupedItems[date].map(item => {
                                     return (
                                         <li key={item.id} className="bg-white/5 p-3 rounded-md flex items-center gap-3 group">
+                                            <span className={`text-xs text-gray-500 font-mono transition-colors ${item.completed ? 'line-through' : ''}`}>
+                                                {item.time || new Date(item.creationDate || item.id).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                                            </span>
                                             <input
                                                 type="checkbox"
                                                 checked={item.completed}
