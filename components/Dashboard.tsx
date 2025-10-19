@@ -4,12 +4,14 @@ import { sendTextMessage, getAi, apiCallWithRetry } from '../services/geminiServ
 import { formatCurrency } from '../services/financeService';
 import { initDB, getAllInstructions, addInstruction, deleteInstructionById, getLatestChatLogForToday, saveChatLog, addFile, getAllFiles, getFileById, deleteFile, updateFile, deleteChatLogsByDate, deleteAllChatLogs } from '../services/db';
 import { Modality, LiveServerMessage } from '@google/genai';
+import { getOutputAudioContext, playAudioBlob, synthesizeSpeech, createWavBlob, createPcmBlob, decode } from '../services/audioService';
 import Dictaphone, { DictaphoneHandles } from './Dictaphone';
 import Finance from './Finance';
 import Organizer from './Organizer';
 import FileStorage from './FileStorage';
 import Toolbox from './Toolbox';
 import AssistantConfig from './AssistantConfig';
+import Translator from './Translator';
 import { 
     setPanelStateFunctionDeclaration, 
     clearChatHistoryFunctionDeclaration, 
@@ -81,106 +83,6 @@ declare var mammoth: any;
 declare var docx: any;
 declare var pdfjsLib: any;
 declare var jspdf: any;
-
-
-// --- Helper Functions for Audio Processing ---
-function decode(base64: string) {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
-
-function encode(bytes: Uint8Array) {
-  let binary = '';
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-/**
- * Creates a WAV file blob from raw 16-bit PCM audio data.
- * This is crucial for playing Gemini's audio output reliably in the browser.
- * @param pcmData The raw audio data (Int16Array or Uint8Array).
- * @param sampleRate The sample rate of the audio (e.g., 24000).
- * @returns A Blob representing the WAV file.
- */
-function createWavBlob(pcmData: Uint8Array, sampleRate = 24000): Blob {
-    const numChannels = 1;
-    const bitsPerSample = 16;
-    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-    const blockAlign = numChannels * (bitsPerSample / 8);
-    const dataSize = pcmData.length;
-    const fileSize = 36 + dataSize;
-
-    const buffer = new ArrayBuffer(44);
-    const view = new DataView(buffer);
-
-    // RIFF header
-    view.setUint32(0, 0x52494646, false); // "RIFF"
-    view.setUint32(4, fileSize, true);
-    view.setUint32(8, 0x57415645, false); // "WAVE"
-
-    // fmt chunk
-    view.setUint32(12, 0x666d7420, false); // "fmt "
-    view.setUint32(16, 16, true); // Sub-chunk size (16 for PCM)
-    view.setUint16(20, 1, true); // Audio format (1 for PCM)
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitsPerSample, true);
-
-    // data chunk
-    view.setUint32(36, 0x64617461, false); // "data"
-    view.setUint32(40, dataSize, true);
-
-    return new Blob([view, pcmData], { type: 'audio/wav' });
-}
-
-
-async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number,
-  numChannels: number,
-): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
-  const frameCount = dataInt16.length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-
-  for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-    for (let i = 0; i < frameCount; i++) {
-      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
-    }
-  }
-  return buffer;
-}
-
-/**
- * Safely converts a Float32Array from the Web Audio API into a base64-encoded
- * 16-bit PCM audio blob, which is the format required by the Gemini Live API.
- * @param data The raw Float32Array audio data.
- * @returns An object containing the base64-encoded data and the correct MIME type.
- */
-function createPcmBlob(data: Float32Array): { data: string; mimeType: string; } {
-  const l = data.length;
-  const int16 = new Int16Array(l);
-  for (let i = 0; i < l; i++) {
-    // Clamp the value to the [-1, 1] range to prevent clipping issues, then scale to the 16-bit integer range.
-    int16[i] = Math.max(-1, Math.min(1, data[i])) * 32767;
-  }
-  return {
-    data: encode(new Uint8Array(int16.buffer)),
-    mimeType: 'audio/pcm;rate=16000',
-  };
-}
 
 
 // Helper to find the last index of an element in an array that satisfies a condition.
@@ -258,7 +160,7 @@ interface DashboardProps {
   onExpandChat: () => void;
 }
 
-type View = 'chat' | 'dictaphone' | 'finance' | 'organizer' | 'storage' | 'toolbox' | 'assistant-config';
+type View = 'chat' | 'translator' | 'dictaphone' | 'finance' | 'organizer' | 'storage' | 'toolbox' | 'assistant-config';
 
 const TABS: { view: View; title: string; icon: React.ReactNode }[] = [
     {
@@ -290,6 +192,11 @@ const TABS: { view: View; title: string; icon: React.ReactNode }[] = [
         view: 'dictaphone',
         title: 'Диктофон',
         icon: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M12,2A10,10,0,1,0,22,12,10,10,0,0,0,12,2Zm0,18a8,8,0,1,1,8-8A8,8,0,0,1,12,20Z" /><path d="M12,7a5,5,0,1,0,5,5A5,5,0,0,0,12,7Z" /></svg>
+    },
+    {
+        view: 'translator',
+        title: 'Переводчик',
+        icon: <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M12,2C17.52,2 22,6.48 22,12C22,17.52 17.52,22 12,22C6.48,22 2,17.52 2,12C2,6.48 6.48,2 12,2M11,19.93C7.05,19.44 4,16.08 4,12C4,11.38 4.08,10.78 4.21,10.21L9,15V16A2,2 0 0,0 11,18V19.93M12.5,9H10.41L5.41,4H5.5A1,1 0 0,1 6.5,3H17.5A1,1 0 0,1 18.5,4L12.5,10V9M13,19.93V18A2,2 0 0,0 15,16V15L19.79,10.21C19.92,10.78 20,11.38 20,12C20,16.08 16.95,19.44 13,19.93Z" /></svg>
     },
     {
         view: 'chat',
@@ -367,7 +274,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   // --- Refs for Audio and API ---
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
-  const outputAudioContextRef = useRef<AudioContext | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -474,11 +380,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
 
   // --- Core Logic ---
   const playPageTurnSound = useCallback(async (reverse = false) => {
-    if (!outputAudioContextRef.current) return;
-    const audioCtx = outputAudioContextRef.current;
-    if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
+    const audioCtx = await getOutputAudioContext();
+    if (!audioCtx) return;
 
     const duration = 0.4; // Softer: slightly longer duration
     const bufferSize = audioCtx.sampleRate * duration;
@@ -536,17 +439,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
       }
   }, [isChatCollapsed]);
 
-  const playDisconnectSound = useCallback(() => {
-    if (!outputAudioContextRef.current) {
-        return Promise.resolve();
-    }
-    const audioCtx = outputAudioContextRef.current;
-
-    return new Promise<void>(async (resolve) => {
-        if (audioCtx.state === 'suspended') {
-            await audioCtx.resume();
-        }
-
+  const playDisconnectSound = useCallback(async () => {
+    const audioCtx = await getOutputAudioContext();
+    if (!audioCtx) return Promise.resolve();
+    
+    return new Promise<void>((resolve) => {
         const osc = audioCtx.createOscillator();
         const gainNode = audioCtx.createGain();
         const duration = 0.35;
@@ -570,11 +467,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
   }, []);
   
   const playConnectionLossSound = useCallback(async () => {
-    if (!outputAudioContextRef.current) return;
-    const audioCtx = outputAudioContextRef.current;
-    if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
+    const audioCtx = await getOutputAudioContext();
+    if (!audioCtx) return;
 
     const duration = 0.2;
     const osc = audioCtx.createOscillator();
@@ -634,100 +528,18 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     scriptProcessorRef.current?.disconnect();
     analyserRef.current?.disconnect();
 
-    const closePromises: Promise<void>[] = [];
     if (inputAudioContextRef.current && inputAudioContextRef.current.state !== 'closed') {
-        closePromises.push(inputAudioContextRef.current.close().catch(console.error));
+        await inputAudioContextRef.current.close().catch(console.error);
         inputAudioContextRef.current = null;
     }
-    if (outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
-        closePromises.push(outputAudioContextRef.current.close().catch(console.error));
-        outputAudioContextRef.current = null;
-    }
     
-    if (closePromises.length > 0) {
-        await Promise.all(closePromises);
-    }
-
     if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
     }
   }, [playDisconnectSound]);
 
-    const synthesizeSpeech = useCallback(async (text: string): Promise<Uint8Array> => {
-        const speechTask = async () => {
-            const ai = getAi();
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash-preview-tts',
-                contents: [{ parts: [{ text: text }] }],
-                config: {
-                    responseModalities: [Modality.AUDIO],
-                    speechConfig: {
-                        voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: 'Zephyr' },
-                        },
-                    },
-                },
-            });
-
-            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (base64Audio) {
-                return decode(base64Audio);
-            } else {
-                const blockReason = response.candidates?.[0]?.finishReason;
-                const safetyRatings = response.candidates?.[0]?.safetyRatings;
-                console.error("Speech synthesis failed.", { blockReason, safetyRatings });
-                throw new Error(`Speech synthesis returned no audio data. Reason: ${blockReason || 'Unknown'}`);
-            }
-        };
-        return apiCallWithRetry(speechTask, 3, 1000);
-    }, []);
-
-    const getOutputAudioContext = useCallback(async (): Promise<AudioContext> => {
-        if (outputAudioContextRef.current && outputAudioContextRef.current.state !== 'closed') {
-            if (outputAudioContextRef.current.state === 'suspended') {
-                await outputAudioContextRef.current.resume().catch(e => console.error("Failed to resume audio context:", e));
-            }
-            return outputAudioContextRef.current;
-        }
-        const WebkitAudioContext = (window as any).webkitAudioContext;
-        const newCtx = new (window.AudioContext || WebkitAudioContext)({ sampleRate: 24000 });
-        outputAudioContextRef.current = newCtx;
-        if (newCtx.state === 'suspended') {
-             await newCtx.resume().catch(e => console.error("Failed to resume new audio context:", e));
-        }
-        return newCtx;
-    }, []);
-
-    const playAudioBlob = useCallback(async (blob: Blob): Promise<void> => {
-        return new Promise(async (resolve, reject) => {
-            if (!blob || blob.size < 44) { // 44 is WAV header size
-                return reject(new Error("Invalid audio blob provided."));
-            }
-            try {
-                setIsSpeaking(true);
-                const audioCtx = await getOutputAudioContext();
-                const arrayBuffer = await blob.arrayBuffer();
-                const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-
-                const source = audioCtx.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioCtx.destination);
-                
-                source.onended = () => {
-                    setIsSpeaking(false);
-                    resolve();
-                };
-                source.start();
-            } catch (e) {
-                setIsSpeaking(false);
-                console.error("Audio playback failed with Web Audio API:", e);
-                reject(e);
-            }
-        });
-    }, [getOutputAudioContext]);
-
-    const playTripleBeep = useCallback((): Promise<void> => {
+    const playTripleBeep = useCallback(async (): Promise<void> => {
         const sampleRate = 24000;
         const duration = 0.15;
         const pause = 0.05;
@@ -754,8 +566,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
         fullAudio.set(beep, beep.length * 2 + silence.length * 2);
         
         const wavBlob = createWavBlob(new Uint8Array(fullAudio.buffer), sampleRate);
-        return playAudioBlob(wavBlob);
-    }, [playAudioBlob]);
+        const { speakingPromise } = await playAudioBlob(wavBlob);
+        await speakingPromise;
+    }, []);
 
   const clearTaskReminder = useCallback((id: number, type: 'planner' | 'calendar') => {
     const key = `${type}-${id}`;
@@ -801,7 +614,8 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
             const audioWavBlob = createWavBlob(audioBytes);
             
             // Play audio FIRST, before updating the chat.
-            await playAudioBlob(audioWavBlob);
+            const { speakingPromise } = await playAudioBlob(audioWavBlob);
+            await speakingPromise;
             
             // If audio was successful, now add the message to the chat.
             setTranscriptHistory(prev => [...prev, {
@@ -831,7 +645,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSessionEnd, isChatCollapsed, on
     
     taskRemindersRef.current.set(`${type}-${itemId}`, timeoutId);
 
-  }, [clearTaskReminder, playTripleBeep, synthesizeSpeech, playAudioBlob]);
+  }, [clearTaskReminder, playTripleBeep]);
 
   useEffect(() => {
     if (isDbReady) {
@@ -993,8 +807,9 @@ ${formattedHistory}
         const ai = getAi();
         let nextStartTime = 0;
 
-        const outputNode = outputAudioContextRef.current!.createGain();
-        outputNode.connect(outputAudioContextRef.current!.destination);
+        const outputAudioContext = await getOutputAudioContext();
+        const outputNode = outputAudioContext.createGain();
+        outputNode.connect(outputAudioContext.destination);
 
         sessionPromiseRef.current = ai.live.connect({
             model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -1198,7 +1013,6 @@ ${formattedHistory}
                            return;
                         }
                         
-                        // Ensure the output audio context is running before attempting to play audio.
                         const audioCtx = await getOutputAudioContext();
                         if (!audioCtx) {
                             console.error("Output audio context is not available for playback.");
@@ -1208,7 +1022,7 @@ ${formattedHistory}
                         setIsSpeaking(true);
                         const base64Audio = message.serverContent.modelTurn.parts[0].inlineData.data;
                         const audioBytes = decode(base64Audio);
-                        const audioBuffer = await decodeAudioData(audioBytes, audioCtx, 24000, 1);
+                        const audioBuffer = await audioCtx.decodeAudioData((await createWavBlob(audioBytes).arrayBuffer()));
                         
                         const source = audioCtx.createBufferSource();
                         source.buffer = audioBuffer;
@@ -1385,14 +1199,11 @@ ${formattedHistory}
             }
         }
     }
-  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, playConnectionLossSound, synthesizeSpeech, playAudioBlob, setPlannerContent, setCalendarEvents, getOutputAudioContext]);
+  }, [disconnect, isConnected, isConnecting, setTranscriptHistory, playConnectionLossSound, setPlannerContent, setCalendarEvents, playTripleBeep]);
 
   const playConnectionSound = useCallback(async () => {
-    if (!outputAudioContextRef.current) return;
-    const audioCtx = outputAudioContextRef.current;
-    if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-    }
+    const audioCtx = await getOutputAudioContext();
+    if (!audioCtx) return;
 
     const oscillator = audioCtx.createOscillator();
     const gainNode = audioCtx.createGain();
@@ -1581,7 +1392,9 @@ ${formattedHistory}
                         const message = `Таймер "${label}" завершен.`;
                         setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), author: 'assistant', text: message, type: 'message', timestamp: Date.now() }]);
                         const audioBytes = await synthesizeSpeech(message);
-                        playAudioBlob(createWavBlob(audioBytes));
+                        // FIX: The call to playAudioBlob was incorrect. Updated to correctly await the speakingPromise.
+                        const { speakingPromise } = await playAudioBlob(createWavBlob(audioBytes));
+                        await speakingPromise;
                         internalTimersRef.current.delete(id);
                     }, durationInSeconds * 1000);
 
@@ -1936,7 +1749,7 @@ ${formattedHistory}
                         onExpandChat();
                     }
                     
-                    if (view && ['chat', 'dictaphone', 'finance', 'organizer', 'storage', 'toolbox', 'assistant-config'].includes(view)) {
+                    if (view && ['chat', 'translator', 'dictaphone', 'finance', 'organizer', 'storage', 'toolbox', 'assistant-config'].includes(view)) {
                         if (activeView !== view && !panelWasCollapsed) {
                             playPageTurnSound();
                         }
@@ -2649,7 +2462,7 @@ ${formattedHistory}
             resultText = `Error executing function ${fc.name}.`;
         }
         return resultText;
-    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, synthesizeSpeech, playAudioBlob, setTaskReminder, getOutputAudioContext]);
+    }, [onExpandChat, handleCollapse, disconnect, transcriptHistory, isChatCollapsed, financeData, setFinanceData, findTransaction, recalculateBalances, plannerContent, setPlannerContent, playPageTurnSound, activeView, notes, setNotes, contacts, setContacts, calendarEvents, setCalendarEvents, setOrganizerInitialState, loadInstructions, setVoiceSettings, attachedFile, loadFiles, storedFiles, handleRemoveFile, setAlarms, alarms, activeAlarm, setTaskReminder]);
 
     useEffect(() => {
         executeFunctionCallRef.current = executeFunctionCall;
@@ -2686,11 +2499,11 @@ ${formattedHistory}
     gainNode.connect(offlineCtx.destination);
 
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, offlineCtx.currentTime); // A5
-    osc.frequency.setValueAtTime(1046.50, offlineCtx.currentTime + 0.1); // C6
+    osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+    osc.frequency.setValueAtTime(1046.50, audioCtx.currentTime + 0.1); // C6
     
-    gainNode.gain.setValueAtTime(0.3, offlineCtx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, offlineCtx.currentTime + 0.4);
+    gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4);
 
     osc.start();
     
@@ -2702,7 +2515,7 @@ ${formattedHistory}
     source.start();
     
     alarmAudioSourceRef.current = source;
-  }, [getOutputAudioContext]);
+  }, []);
 
   // Effect for checking alarms
   useEffect(() => {
@@ -2733,7 +2546,10 @@ ${formattedHistory}
             
             playAlarmSound();
             synthesizeSpeech(message)
-                .then(audioBytes => playAudioBlob(createWavBlob(audioBytes)))
+                .then(async audioBytes => {
+                    const { speakingPromise } = await playAudioBlob(createWavBlob(audioBytes));
+                    await speakingPromise;
+                })
                 .catch(error => {
                     console.error("Failed to synthesize or play alarm sound:", error);
                     // This catch block prevents the app from crashing if synthesis fails on load.
@@ -2743,7 +2559,7 @@ ${formattedHistory}
     }, 1000); // Check every second
 
     return () => clearInterval(interval);
-  }, [alarms, activeAlarm, playAlarmSound, synthesizeSpeech, playAudioBlob]);
+  }, [alarms, activeAlarm, playAlarmSound]);
 
   const handleSendText = async (messageOverride?: string) => {
     const textToSend = messageOverride || inputText.trim();
@@ -2788,7 +2604,8 @@ ${formattedHistory}
 
             setStatus('Синтез речи...');
             const audioBytes = await synthesizeSpeech(response.text);
-            await playAudioBlob(createWavBlob(audioBytes));
+            const { speakingPromise } = await playAudioBlob(createWavBlob(audioBytes));
+            await speakingPromise;
         }
         
         if (response.functionCalls && response.functionCalls.length > 0) {
@@ -2808,7 +2625,8 @@ ${formattedHistory}
                          }
                      ]);
                      const audioBytes = await synthesizeSpeech(resultText);
-                     await playAudioBlob(createWavBlob(audioBytes));
+                     const { speakingPromise } = await playAudioBlob(createWavBlob(audioBytes));
+                     await speakingPromise;
                  }
             }
         }
@@ -2928,7 +2746,10 @@ ${formattedHistory}
              type: 'message',
              timestamp: Date.now()
         }]);
-        synthesizeSpeech(question).then(audioBytes => playAudioBlob(createWavBlob(audioBytes)));
+        synthesizeSpeech(question).then(async audioBytes => {
+            const { speakingPromise } = await playAudioBlob(createWavBlob(audioBytes));
+            await speakingPromise;
+        });
 
     } catch (error) {
         console.error("Error processing file:", error);
@@ -3160,6 +2981,7 @@ ${formattedHistory}
                         </div>
                       </div>
                     )}
+                    {activeView === 'translator' && <Translator />}
                     {activeView === 'dictaphone' && (
                       <Dictaphone 
                         ref={dictaphoneRef} 

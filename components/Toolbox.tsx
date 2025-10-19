@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Alarm } from '../types';
+import { getOutputAudioContext } from '../services/audioService';
 
 interface ToolboxProps {
     alarms: Alarm[];
@@ -98,8 +99,10 @@ const Timer: React.FC = () => {
         };
     }, [isActive, isPaused]);
     
-    const playAlarmSound = () => {
-        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const playAlarmSound = async () => {
+        const audioCtx = await getOutputAudioContext();
+        if (!audioCtx) return;
+
         const osc = audioCtx.createOscillator();
         const gainNode = audioCtx.createGain();
         osc.connect(gainNode);
@@ -137,7 +140,9 @@ const Timer: React.FC = () => {
         setDuration(prev => ({...prev, [unit]: unit === 'h' ? Math.min(23, numValue) : Math.min(59, numValue)}));
     };
 
-    const progress = remainingTime / (duration.h * 3600 + duration.m * 60 + duration.s) * 100;
+    const progress = remainingTime > 0 && (duration.h > 0 || duration.m > 0 || duration.s > 0)
+        ? remainingTime / (duration.h * 3600 + duration.m * 60 + duration.s) * 100
+        : 0;
 
     return (
         <div className="h-full p-4 sm:p-6 flex flex-col items-center justify-center text-white">
